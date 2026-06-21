@@ -656,7 +656,9 @@ async function renderUserChip() {
       return null;
     }
     const initial = (me.name || me.email).charAt(0).toUpperCase();
-    const adminLink = me.role === 'admin' ? `<a href="/users.html">משתמשים</a><span class="sep">·</span>` : '';
+    const adminLink = me.role === 'admin'
+      ? `<a href="/users.html">משתמשים</a><span class="sep">·</span><a href="/bank-credentials.html">סיסמאות</a><span class="sep">·</span>`
+      : '';
     target.innerHTML = `
       <div class="user-chip">
         <span class="avatar">${escapeHtml(initial)}</span>
@@ -844,6 +846,100 @@ async function renderUsersPage() {
     if (!body.email.includes('@')) { errEl.textContent = 'אימייל לא תקין'; return; }
     const r = await fetch('/auth/users', {
       method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      errEl.textContent = e.error || `HTTP ${r.status}`;
+      return;
+    }
+    closeModal();
+    reload();
+  });
+
+  reload();
+}
+
+/* ───────── bank credentials page (admin) ───────── */
+async function renderBankCredentialsPage() {
+  await renderUserChip();
+  const container = document.getElementById('creds-container');
+  const warning = document.getElementById('vault-warning-container');
+
+  const reload = async () => {
+    try {
+      const r = await fetch('/api/bank-credentials');
+      if (!r.ok) {
+        container.innerHTML = `<div class="empty"><h3>אין הרשאה</h3><p>רק admin רשאי לראות את הדף הזה</p></div>`;
+        return;
+      }
+      const { vault_configured, banks } = await r.json();
+      if (!vault_configured) {
+        warning.innerHTML = `<div class="vault-warning">⚠️ <b>BANK_VAULT_KEY לא מוגדר ב-env.</b> בלי המפתח אי אפשר להצפין/לפענח. הוסף ל-.env על השרת:<br><code style="font-family:var(--font-family-en); background:rgba(0,0,0,0.05); padding:2px 6px; border-radius:4px;">BANK_VAULT_KEY=$(openssl rand -hex 32)</code></div>`;
+      } else {
+        warning.innerHTML = '';
+      }
+      container.innerHTML = banks.map(b => `
+        <div class="cred-row">
+          <div class="bank-info">
+            <div class="bank-name">${escapeHtml(b.name_he)}</div>
+            <div class="status-line">
+              ${b.is_set
+                ? `<span class="status-set">✓ הוגדר</span>`
+                : `<span class="status-unset">⚠ עוד לא הוגדר</span>`}
+            </div>
+            ${b.is_set && b.updated_by
+              ? `<div class="meta">עודכן ע"י ${escapeHtml(b.updated_by)} · ${fmtDateTime(b.updated_at)}</div>`
+              : ''}
+          </div>
+          <button class="btn btn-pri btn-sm" data-edit-bank="${escapeHtml(b.id)}" data-bank-name="${escapeHtml(b.name_he)}" ${!vault_configured ? 'disabled' : ''}>ערוך</button>
+        </div>
+      `).join('');
+
+      container.querySelectorAll('[data-edit-bank]').forEach(btn => {
+        btn.addEventListener('click', () => openCredsModal(btn.dataset.editBank, btn.dataset.bankName));
+      });
+    } catch (e) {
+      container.innerHTML = `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
+    }
+  };
+
+  const modal = document.getElementById('modal-bg');
+  const fUser = document.getElementById('f-username');
+  const fPass = document.getElementById('f-password');
+  const fUrl = document.getElementById('f-loginurl');
+  const errEl = document.getElementById('modal-err');
+  const titleEl = document.getElementById('modal-title');
+  let currentBankId = null;
+
+  function openCredsModal(bankId, bankName) {
+    currentBankId = bankId;
+    titleEl.textContent = `עריכת סיסמאות — ${bankName}`;
+    fUser.value = ''; fPass.value = ''; fUrl.value = '';
+    errEl.textContent = '';
+    modal.classList.add('open');
+    setTimeout(() => fUser.focus(), 50);
+  }
+  const closeModal = () => { modal.classList.remove('open'); currentBankId = null; };
+
+  document.getElementById('cancel-btn').addEventListener('click', closeModal);
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
+
+  document.getElementById('save-btn').addEventListener('click', async () => {
+    if (!currentBankId) return;
+    errEl.textContent = '';
+    const body = {
+      username: fUser.value.trim(),
+      password: fPass.value.trim(),
+      loginUrl: fUrl.value.trim(),
+    };
+    if (!body.username && !body.password && !body.loginUrl) {
+      errEl.textContent = 'יש למלא לפחות שדה אחד';
+      return;
+    }
+    const r = await fetch(`/api/bank-credentials/${currentBankId}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
     });
     if (!r.ok) {

@@ -36,7 +36,12 @@ PRIORITY_URL_REAL=...
 PRIORITY_USERNAME=...
 PRIORITY_PASSWORD=...
 
-# Bank credentials (העתק מהמכונה: C:\Users\User\Aiprojects\env\bank.env)
+# Bank credentials vault (master key — אסור לשנות אחרי שיש סיסמאות ב-DB!)
+# יצירה: openssl rand -hex 32
+BANK_VAULT_KEY=...
+
+# Bank credentials — אופציונלי, רק להזרקה ראשונית. אחרי שהן ב-DB אפשר למחוק.
+# (אם לא ב-.env, צריך להגדיר ידנית דרך /bank-credentials.html אחרי deploy)
 LEUMI_USERNAME=...
 LEUMI_PASSWORD=...
 LEUMI_URL=...
@@ -59,6 +64,9 @@ AUTH_REDIRECT_URI=https://tact-bankaccount.newavera.co.il/auth/callback
 AUTH_DB_PATH=/app/data/auth.db
 EOF
 chmod 600 .env
+
+# --- אחרי הרצה ראשונה: bootstrap יעתיק LEUMI_*/DISCOUNT_*/POALIM_*/MIZRACHI_* ל-DB מוצפנים ---
+# אפשר אחר כך למחוק אותם מה-.env (BANK_VAULT_KEY חייב להישאר).
 
 # --- state (אופציונלי, מעביר היסטוריה מ-Windows) ---
 # מהמכונה המקומית:

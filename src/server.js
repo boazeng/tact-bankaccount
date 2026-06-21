@@ -1,7 +1,16 @@
 import express from 'express';
 import dotenv from 'dotenv';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
+
+// Load env from the shared file on local dev. In production (docker) the
+// vars are injected via env_file; the file path below won't exist, so this
+// is a no-op there.
+const tryLoadEnv = (p) => { if (p && fs.existsSync(p)) dotenv.config({ path: p }); };
+tryLoadEnv(process.env.SHARED_ENV_FILE || 'C:/Users/User/Aiprojects/env/.env');
+tryLoadEnv(process.env.BANK_ENV_FILE || 'C:/Users/User/Aiprojects/env/bank.env');
+
 import { bankRegistry, getBank, listBanks } from './scrapers/index.js';
 import {
   upsertBank, upsertAccount, insertTransactions, updateLastSync,
@@ -11,6 +20,13 @@ import {
 } from './db.js';
 import { checkAgainstPriority, priorityConfigured } from './priority/check.js';
 import { installAuth, requireRole } from './auth/index.js';
+import {
+  listStatus as listBankCredentialsStatus,
+  setCredentials as setBankCredentials,
+  resolveCredentialsForBank,
+  bootstrapFromEnvIfEmpty as bootstrapBankCredsFromEnv,
+} from './secrets/bank-creds.js';
+import { vaultConfigured } from './secrets/vault.js';
 
 // In-memory map of in-flight scraper sessions waiting on user input (SMS code, etc.).
 const pendingInputs = new Map();
@@ -19,6 +35,13 @@ const PENDING_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
 
 for (const b of listBanks()) {
   upsertBank(b.id, b.nameHe);
+}
+
+if (vaultConfigured()) {
+  const result = bootstrapBankCredsFromEnv(bankRegistry);
+  if (!result.skipped) console.log(`[bank-creds] bootstrap imported ${result.imported} bank(s) from env`);
+} else {
+  console.warn('[bank-creds] BANK_VAULT_KEY not set — credentials read from env only (no DB vault)');
 }
 
 const PORT = Number(process.env.PORT) || 3030;
@@ -84,10 +107,10 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const credentials = bank.credentialsFromEnv(process.env);
+  const credentials = resolveCredentialsForBank(bankId, bankRegistry, req.user?.email || 'sync');
   const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
   if (missing.length) {
-    send('error', { message: `Missing credentials for ${bankId} in bank.env: ${missing.join(', ')}` });
+    send('error', { message: `Missing credentials for ${bankId} (set them in /bank-credentials.html or env): ${missing.join(', ')}` });
     return res.end();
   }
 
@@ -197,6 +220,48 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
     send('error', { message: err.message, stack: err.stack?.split('\n').slice(0, 5).join('\n') });
   } finally {
     res.end();
+  }
+});
+
+// ─── Bank credentials (admin only) ──────────────────────────────────────
+// Status only — never returns decrypted values.
+app.get('/api/bank-credentials', requireRole('admin'), (req, res) => {
+  const allBanks = listBanks();
+  const status = listBankCredentialsStatus();
+  const byId = new Map(status.map(s => [s.bank_id, s]));
+  res.json({
+    vault_configured: vaultConfigured(),
+    banks: allBanks.map(b => {
+      const s = byId.get(b.id);
+      return {
+        id: b.id,
+        name_he: b.nameHe,
+        is_set: s?.is_set === true,
+        updated_at: s?.updated_at || null,
+        updated_by: s?.updated_by || null,
+      };
+    }),
+  });
+});
+
+app.post('/api/bank-credentials/:bankId', requireRole('admin'), (req, res) => {
+  const bankId = req.params.bankId;
+  if (!bankRegistry[bankId]) return res.status(404).json({ error: 'בנק לא ידוע' });
+  if (!vaultConfigured()) return res.status(500).json({ error: 'BANK_VAULT_KEY לא מוגדר ב-env' });
+
+  const username = (req.body?.username || '').trim() || null;
+  const password = (req.body?.password || '').trim() || null;
+  const loginUrl = (req.body?.loginUrl || '').trim() || null;
+
+  if (!username && !password && !loginUrl) {
+    return res.status(400).json({ error: 'יש למלא לפחות שדה אחד' });
+  }
+  try {
+    setBankCredentials(bankId, { username, password, loginUrl }, req.user.email);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[bank-creds] save error:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 

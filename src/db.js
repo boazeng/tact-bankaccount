@@ -55,6 +55,30 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions(account_id, date DESC);
   CREATE INDEX IF NOT EXISTS idx_accounts_bank ON accounts(bank_id);
+
+  -- Encrypted bank credentials. Each field stored as AES-256-GCM ciphertext;
+  -- decryption requires BANK_VAULT_KEY (env). UI/API NEVER returns decrypted
+  -- values — only the scraper decrypts in-memory at sync time.
+  CREATE TABLE IF NOT EXISTS bank_credentials (
+    bank_id      TEXT PRIMARY KEY,
+    username     TEXT,                          -- encrypted (or null = use env)
+    password     TEXT,                          -- encrypted
+    login_url    TEXT,                          -- encrypted
+    updated_at   TEXT,
+    updated_by   TEXT,
+    is_set       INTEGER NOT NULL DEFAULT 0
+  );
+
+  CREATE TABLE IF NOT EXISTS bank_credentials_audit (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id      TEXT NOT NULL,
+    action       TEXT NOT NULL,                 -- 'set' | 'sync_read' | 'bootstrap'
+    actor        TEXT,                          -- email or 'system'
+    fields       TEXT,                          -- json array of changed field names (never values)
+    occurred_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_creds_audit_bank_time
+    ON bank_credentials_audit(bank_id, occurred_at DESC);
 `);
 
 // ── migrations ───────────────────────────────────────────────────────────
