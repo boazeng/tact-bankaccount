@@ -1,0 +1,253 @@
+import express from 'express';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import crypto from 'node:crypto';
+import { bankRegistry, getBank, listBanks } from './scrapers/index.js';
+import {
+  upsertBank, upsertAccount, insertTransactions, updateLastSync,
+  listBanksWithAccounts, getAccount, getTransactions,
+  setAccountActive, getInactiveMaskedNumbers,
+  getTransactionsForPriorityCheck, updatePriorityStatus,
+} from './db.js';
+import { checkAgainstPriority, priorityConfigured } from './priority/check.js';
+import { installAuth, requireRole } from './auth/index.js';
+
+// In-memory map of in-flight scraper sessions waiting on user input (SMS code, etc.).
+const pendingInputs = new Map();
+const PENDING_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
+
+dotenv.config({ path: 'C:/Users/User/Aiprojects/env/bank.env' });
+
+for (const b of listBanks()) {
+  upsertBank(b.id, b.nameHe);
+}
+
+const PORT = Number(process.env.PORT) || 3030;
+const REDIRECT_URI = process.env.AUTH_REDIRECT_URI || `http://localhost:${PORT}/auth/callback`;
+
+const app = express();
+app.use(express.json());
+
+installAuth(app, {
+  appId: 'tact-bankaccount',
+  dbPath: process.env.AUTH_DB_PATH || 'C:/Users/User/Aiprojects/env/auth.db',
+  redirectUri: REDIRECT_URI,
+  initialUsers: [],
+});
+
+app.use(express.static(path.resolve('public')));
+
+app.get('/api/banks', (req, res) => {
+  const dbBanks = listBanksWithAccounts();
+  const registryById = Object.fromEntries(listBanks().map(b => [b.id, b]));
+  const merged = dbBanks.map(b => ({
+    ...b,
+    has_scraper: !!registryById[b.id],
+  }));
+  res.json({ banks: merged });
+});
+
+app.get('/api/accounts/:id', (req, res) => {
+  const acc = getAccount(Number(req.params.id));
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  res.json({ account: acc });
+});
+
+app.get('/api/accounts/:id/transactions', (req, res) => {
+  const accountId = Number(req.params.id);
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const offset = Number(req.query.offset) || 0;
+  const txns = getTransactions(accountId, { limit, offset });
+  res.json({ account: acc, transactions: txns });
+});
+
+app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) => {
+  const bankId = req.params.bankId;
+  const daysBack = Math.min(Number(req.query.days) || 30, 365);
+
+  let bank;
+  try {
+    bank = getBank(bankId);
+  } catch {
+    return res.status(404).json({ error: `Unknown bank: ${bankId}` });
+  }
+
+  const syncId = crypto.randomUUID();
+
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders?.();
+
+  const send = (event, data) => {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  };
+
+  const credentials = bank.credentialsFromEnv(process.env);
+  const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
+  if (missing.length) {
+    send('error', { message: `Missing credentials for ${bankId} in bank.env: ${missing.join(', ')}` });
+    return res.end();
+  }
+
+  // SMS / interactive input bridge: scraper calls onSmsRequired, server emits
+  // an SSE event with the syncId, UI posts the code back to /api/sync/:syncId/sms-code,
+  // and we resolve the pending promise so the scraper can continue.
+  const onSmsRequired = ({ message } = {}) => {
+    send('sms-required', { syncId, message: message || 'נדרש קוד SMS' });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pendingInputs.get(syncId)?.resolve === resolve) pendingInputs.delete(syncId);
+        reject(new Error('SMS code timeout (5 min)'));
+      }, PENDING_INPUT_TIMEOUT_MS);
+      pendingInputs.set(syncId, {
+        resolve: (val) => { clearTimeout(timer); resolve(val); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
+    });
+  };
+
+  req.on('close', () => {
+    const p = pendingInputs.get(syncId);
+    if (p) { pendingInputs.delete(syncId); p.reject(new Error('Client disconnected')); }
+  });
+
+  try {
+    send('sync-started', { syncId, bankId, daysBack });
+    send('progress', { step: 'start', message: `מתחיל סנכרון ${bank.info.nameHe} (${daysBack} ימים)` });
+
+    const result = await bank.scrape({
+      credentials,
+      daysBack,
+      onProgress: (p) => send('progress', p),
+      onSmsRequired,
+    });
+
+    const inactiveSet = getInactiveMaskedNumbers(bankId);
+
+    let totalNew = 0;
+    let totalAll = 0;
+    let skippedInactive = 0;
+    const perAccount = [];
+    for (const accResult of result.accounts) {
+      const accountId = upsertAccount({
+        bankId,
+        accountIndex: accResult.account.accountIndex,
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        iban: accResult.account.iban,
+        balance: accResult.account.balance,
+        branchId: accResult.account.branchId,
+        branchName: accResult.account.branchName,
+      });
+
+      if (inactiveSet.has(accResult.account.maskedNumber)) {
+        skippedInactive++;
+        send('account-skipped', {
+          maskedNumber: accResult.account.maskedNumber,
+          corporateName: accResult.account.corporateName,
+          reason: 'inactive',
+        });
+        continue;
+      }
+
+      const newHistory = insertTransactions(accountId, accResult.transactions.history, { status: 'completed' });
+      const newPending = insertTransactions(accountId, accResult.transactions.pending, { status: 'pending' });
+      const newCount = newHistory + newPending;
+      const fetched = accResult.transactions.history.length + accResult.transactions.pending.length;
+
+      updateLastSync(accountId, accResult.account.balance);
+
+      totalNew += newCount;
+      totalAll += fetched;
+      perAccount.push({
+        accountId,
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        fetched,
+        newSaved: newCount,
+        dedupSkipped: fetched - newCount,
+      });
+
+      send('account-saved', {
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        fetched,
+        newSaved: newCount,
+        dedupSkipped: fetched - newCount,
+      });
+    }
+
+    send('done', {
+      bankId,
+      bankName: bank.info.nameHe,
+      daysBack,
+      fromDate: result.fromDate,
+      toDate: result.toDate,
+      accountsCount: result.accounts.length - skippedInactive,
+      skippedInactive,
+      totalFetched: totalAll,
+      totalNewSaved: totalNew,
+      totalDedupSkipped: totalAll - totalNew,
+      perAccount,
+    });
+  } catch (err) {
+    console.error('Sync error:', err);
+    send('error', { message: err.message, stack: err.stack?.split('\n').slice(0, 5).join('\n') });
+  } finally {
+    res.end();
+  }
+});
+
+app.post('/api/accounts/:id/check-priority', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  if (!priorityConfigured()) {
+    return res.status(500).json({ error: 'Priority not configured in env (PRIORITY_URL_REAL/USERNAME/PASSWORD)' });
+  }
+  try {
+    const ourTxns = getTransactionsForPriorityCheck(accountId);
+    const result = await checkAgainstPriority(ourTxns);
+    updatePriorityStatus(result.updates);
+    res.json({
+      ok: true,
+      checked: result.ourTxnsChecked,
+      matched: result.matched,
+      notMatched: result.ourTxnsChecked - result.matched,
+      priorityLinesScanned: result.priorityLinesChecked,
+      dateRange: result.dateRange,
+    });
+  } catch (e) {
+    console.error('Priority check error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/accounts/:id/active', requireRole('approver'), (req, res) => {
+  const accountId = Number(req.params.id);
+  const isActive = req.body?.active !== false;
+  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  setAccountActive(accountId, isActive);
+  res.json({ ok: true, active: isActive });
+});
+
+// User-input bridge for in-flight syncs (SMS codes, etc.). Same auth as sync itself.
+app.post('/api/sync/:syncId/sms-code', requireRole('approver'), (req, res) => {
+  const { syncId } = req.params;
+  const code = (req.body?.code || '').trim();
+  if (!code) return res.status(400).json({ error: 'קוד חסר' });
+  const pending = pendingInputs.get(syncId);
+  if (!pending) return res.status(404).json({ error: 'אין סנכרון פעיל שמחכה לקוד (אולי פג תוקף)' });
+  pendingInputs.delete(syncId);
+  pending.resolve(code);
+  res.json({ ok: true });
+});
+
+app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));
+
+app.listen(PORT, () => {
+  console.log(`TACT BankAccount running at http://localhost:${PORT}`);
+  console.log(`OAuth redirect URI: ${REDIRECT_URI}`);
+});

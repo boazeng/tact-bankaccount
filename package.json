@@ -1,0 +1,20 @@
+{
+  "name": "tact-bankaccount",
+  "version": "0.2.0",
+  "description": "TACT bank dashboard — Leumi business scraper + SQLite + web UI",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/server.js",
+    "scrape": "node src/scrape.js",
+    "scrape:30": "node src/scrape.js 30",
+    "scrape:90": "node src/scrape.js 90",
+    "scrape:show": "node src/scrape.js --show"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.1",
+    "puppeteer": "^24.43.1"
+  }
+}

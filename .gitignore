@@ -1,0 +1,26 @@
+node_modules/
+output/
+data/
+*.log
+
+# Secrets — bank.env, auth.db, etc. are kept outside the repo but be defensive
+.env
+.env.*
+*.env
+bank.env
+auth.db
+*.db
+*.db-journal
+*.db-shm
+*.db-wal
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/*.log
+
+# Puppeteer / test artifacts
+*.png
+*.har
+*_raw.json
+api_calls*.json

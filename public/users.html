@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TACT — ניהול משתמשים</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23FAF9F5"/><text x="32" y="42" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-weight="700" font-size="28" fill="%231F3A5F">T</text><circle cx="50" cy="22" r="6" fill="%23D64A2E"/></svg>'>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .users-table-wrap { border: 1px solid var(--color-border); border-radius: var(--radius-xl); overflow: hidden; background: var(--color-bg-white); box-shadow: var(--shadow-md); }
+  .users-table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .users-table thead { background: var(--color-bg); border-bottom: 1px solid var(--color-border); }
+  .users-table thead th { text-align: right; padding: 14px 18px; font-family: var(--font-family-en); font-size: 0.72rem; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-light); }
+  .users-table tbody tr { border-bottom: 1px solid var(--color-border-soft); }
+  .users-table tbody tr:last-child { border-bottom: 0; }
+  .users-table td { padding: 12px 18px; vertical-align: middle; }
+  .users-table .email { font-family: var(--font-family-en); font-weight: 500; color: var(--color-text); }
+  .users-table .name { color: var(--color-text-light); font-size: 0.88rem; }
+  .users-table .actions { text-align: left; white-space: nowrap; width: 1%; }
+  .access-cell { display: flex; flex-direction: column; gap: 4px; }
+  .access-pill { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78rem; padding: 3px 9px; border-radius: var(--radius-full); width: fit-content; }
+  .access-pill .role { font-family: var(--font-family-en); font-size: 0.65rem; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; opacity: 0.75; }
+  .access-pill.global { background: var(--color-accent-soft); color: var(--color-accent); font-weight: 600; }
+  .access-pill.app { background: var(--color-primary-soft); color: var(--color-primary); }
+  .access-pill.none { background: var(--color-bg); color: var(--color-text-light); }
+  .status-active { color: var(--color-pos); font-weight: 600; font-size: 0.85rem; }
+  .status-inactive { color: var(--color-text-light); font-size: 0.85rem; }
+  .icon-btn { background: var(--color-bg); border: 1px solid var(--color-border); width: 30px; height: 30px; border-radius: 8px; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; margin-right: 4px; transition: all 0.15s ease; color: var(--color-text-light); font-size: 0.9rem; }
+  .icon-btn:hover { background: var(--color-primary-soft); border-color: var(--color-primary); color: var(--color-primary); }
+  .icon-btn.del:hover { background: var(--color-accent-soft); border-color: var(--color-accent); color: var(--color-accent); }
+
+  .modal-bg { position: fixed; inset: 0; background: rgba(28, 27, 25, 0.5); z-index: 200; display: none; align-items: center; justify-content: center; padding: 20px; }
+  .modal-bg.open { display: flex; }
+  .modal { background: var(--color-bg-white); border-radius: var(--radius-xl); padding: 32px; width: 100%; max-width: 540px; box-shadow: 0 20px 60px rgba(28, 27, 25, 0.25); max-height: 90vh; overflow-y: auto; }
+  .modal h3 { font-size: 1.2rem; font-weight: 700; margin-bottom: 18px; }
+  .field { margin-bottom: 14px; }
+  .field label { display: block; font-family: var(--font-family-en); font-size: 0.72rem; letter-spacing: 0.12em; text-transform: uppercase; color: var(--color-text-light); font-weight: 600; margin-bottom: 6px; }
+  .field input, .field select { width: 100%; padding: 10px 14px; border: 1px solid var(--color-border); border-radius: var(--radius-md); font-family: inherit; font-size: 0.95rem; background: var(--color-bg); }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-soft); }
+  .field-row { display: flex; align-items: center; gap: 10px; font-size: 0.9rem; cursor: pointer; }
+  .field-row input { width: auto; accent-color: var(--color-primary); }
+
+  .access-block { padding: 14px; background: var(--color-bg); border-radius: var(--radius-md); border: 1px solid var(--color-border); margin-bottom: 14px; }
+  .access-radio { display: flex; align-items: flex-start; gap: 10px; padding: 10px 0; cursor: pointer; }
+  .access-radio:not(:last-child) { border-bottom: 1px solid var(--color-border-soft); }
+  .access-radio input { margin-top: 4px; accent-color: var(--color-primary); }
+  .access-radio .label-main { font-weight: 600; color: var(--color-text); }
+  .access-radio .label-sub { font-size: 0.82rem; color: var(--color-text-light); margin-top: 2px; }
+  .access-detail { margin-top: 10px; padding-right: 26px; display: none; }
+  .access-radio input:checked ~ .access-detail-container .access-detail { display: block; }
+  .access-radio.global-opt .access-detail { display: none; }
+  .access-radio.global-opt input:checked + div .access-detail { display: block; }
+  .access-radio.specific-opt .access-detail { display: none; }
+  .access-radio.specific-opt input:checked + div .access-detail { display: block; }
+
+  .app-row { display: grid; grid-template-columns: 24px 1fr 130px; gap: 10px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--color-border-soft); }
+  .app-row:last-child { border-bottom: 0; }
+  .app-row input[type="checkbox"] { accent-color: var(--color-primary); width: 18px; height: 18px; }
+  .app-row .app-name { font-size: 0.92rem; }
+  .app-row select { padding: 6px 10px; font-size: 0.85rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-bg-white); }
+  .app-row select:disabled { opacity: 0.4; background: var(--color-bg); }
+
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 22px; }
+  .err { color: var(--color-accent); font-size: 0.85rem; margin-top: 8px; min-height: 1.2em; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <span class="mark">T<span class="d"></span>A<span class="d"></span>C<span class="d"></span>T</span>
+      <span class="word">bank account</span>
+    </a>
+    <div class="header-spacer"></div>
+    <div id="user-chip"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <a href="/" class="back-link">← חזרה לחשבונות</a>
+
+  <div class="page-head" style="padding-bottom: 12px;">
+    <div class="eyebrow"><b></b>USER MANAGEMENT</div>
+    <h1>ניהול <span class="acc">משתמשים</span></h1>
+    <p class="sub">מי מורשה לגשת לאפליקציות, ובאיזה תפקיד. רק admin יכול לערוך.<br>גישה גלובלית = כל האפליקציות. גישה ספציפית = אפליקציות נבחרות בלבד.</p>
+  </div>
+
+  <div style="margin-bottom: 20px;">
+    <button class="btn btn-pri" id="add-user-btn">+ הוסף משתמש</button>
+  </div>
+
+  <div class="users-table-wrap">
+    <table class="users-table">
+      <thead>
+        <tr>
+          <th>אימייל</th>
+          <th>שם</th>
+          <th>גישה</th>
+          <th>פעיל</th>
+          <th>התחברות אחרונה</th>
+          <th class="actions">פעולות</th>
+        </tr>
+      </thead>
+      <tbody id="users-tbody">
+        <tr><td colspan="6" style="text-align:center; padding: 30px; color: var(--color-text-light);">טוען…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</main>
+
+<div class="modal-bg" id="modal-bg">
+  <div class="modal">
+    <h3 id="modal-title">הוספת משתמש</h3>
+    <div class="field">
+      <label>אימייל</label>
+      <input type="email" id="f-email" placeholder="user@gmail.com" autocomplete="off">
+    </div>
+    <div class="field">
+      <label>שם (אופציונלי)</label>
+      <input type="text" id="f-name">
+    </div>
+
+    <div class="field">
+      <label>גישה לאפליקציות</label>
+      <div class="access-block">
+        <label class="access-radio">
+          <input type="radio" name="access-kind" value="global" id="r-global">
+          <div style="flex:1;">
+            <div class="label-main">כל האפליקציות</div>
+            <div class="label-sub">המשתמש יוכל להיכנס לכל האפליקציות תחת אותו תפקיד</div>
+            <div class="access-detail" id="d-global">
+              <div class="field" style="margin: 8px 0 0;">
+                <label>תפקיד</label>
+                <select id="f-global-role">
+                  <option value="user">user — צפייה</option>
+                  <option value="approver">approver — אישור פעולות</option>
+                  <option value="admin">admin — ניהול מלא</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </label>
+        <label class="access-radio">
+          <input type="radio" name="access-kind" value="specific" id="r-specific" checked>
+          <div style="flex:1;">
+            <div class="label-main">אפליקציות ספציפיות</div>
+            <div class="label-sub">בחר אילו אפליקציות + תפקיד לכל אחת</div>
+            <div class="access-detail" id="d-specific" style="display: block;">
+              <div id="apps-list" style="margin-top: 8px;"></div>
+            </div>
+          </div>
+        </label>
+      </div>
+    </div>
+
+    <label class="field-row">
+      <input type="checkbox" id="f-active" checked>
+      <span>פעיל (מותר להתחבר)</span>
+    </label>
+    <div class="err" id="modal-err"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="cancel-btn">ביטול</button>
+      <button class="btn btn-pri" id="save-btn">שמירה</button>
+    </div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">© TACT · BANK ACCOUNT DASHBOARD</div>
+</footer>
+
+<script src="/app.js"></script>
+<script>renderUsersPage();</script>
+</body>
+</html>

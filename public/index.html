@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TACT — חשבונות בנק</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23FAF9F5"/><text x="32" y="42" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-weight="700" font-size="28" fill="%231F3A5F">T</text><circle cx="50" cy="22" r="6" fill="%23D64A2E"/></svg>'>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <a href="/" class="logo">
+      <span class="mark">T<span class="d"></span>A<span class="d"></span>C<span class="d"></span>T</span>
+      <span class="word">bank account</span>
+    </a>
+    <div class="header-spacer"></div>
+    <div id="user-chip"></div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="page-head">
+    <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
+    <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
+    <p class="sub">סנכרון תנועות מהבנקים אל בסיס הנתונים המקומי. כל סנכרון מוסיף רק תנועות חדשות — אין כפילויות.</p>
+  </div>
+
+  <div id="bank-summary" class="bank-summary"></div>
+
+  <div id="banks-container">
+    <p class="empty" style="padding: 32px;">טוען…</p>
+  </div>
+</main>
+
+<div class="sync-panel" id="sync-panel">
+  <div class="head">
+    <h3 id="sync-title">סנכרון</h3>
+    <button class="close" id="sync-close" aria-label="סגירה">✕</button>
+  </div>
+  <div class="progress-bar"><i></i></div>
+  <div class="sync-log" id="sync-log"></div>
+  <div class="sync-summary" id="sync-summary" style="display:none">
+    <div class="m"><div class="num new" id="sum-new">0</div><div class="lbl">תנועות חדשות נשמרו</div></div>
+    <div class="m"><div class="num dup" id="sum-dup">0</div><div class="lbl">דילוג כפילות</div></div>
+    <div class="m"><div class="num" id="sum-accounts">0</div><div class="lbl">חשבונות</div></div>
+  </div>
+</div>
+
+<footer>
+  <div class="wrap">© TACT · BANK ACCOUNT DASHBOARD</div>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

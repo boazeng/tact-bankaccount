@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TACT — אין גישה</title>
+<link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23FAF9F5"/><text x="32" y="42" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-weight="700" font-size="28" fill="%231F3A5F">T</text><circle cx="50" cy="22" r="6" fill="%23D64A2E"/></svg>'>
+<link rel="stylesheet" href="/style.css">
+<style>
+  .denied-page {
+    min-height: calc(100vh - 72px);
+    display: flex; align-items: center; justify-content: center;
+    padding: 40px 20px;
+  }
+  .denied-card {
+    background: var(--color-bg-white); border: 1px solid var(--color-border);
+    border-radius: var(--radius-xl); padding: 48px 44px;
+    box-shadow: var(--shadow-lg); width: 100%; max-width: 460px;
+    text-align: center;
+  }
+  .denied-card .ico {
+    width: 56px; height: 56px; border-radius: 50%;
+    background: var(--color-accent-soft); color: var(--color-accent);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 1.6rem; font-weight: 700; margin-bottom: 18px;
+  }
+  .denied-card h1 {
+    font-size: 1.5rem; font-weight: 700; color: var(--color-text);
+    margin: 0 0 10px; letter-spacing: -0.3px;
+  }
+  .denied-card p {
+    color: var(--color-text-light); font-size: 0.95rem; margin-bottom: 28px;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="header-inner">
+    <span class="logo">
+      <span class="mark">T<span class="d"></span>A<span class="d"></span>C<span class="d"></span>T</span>
+      <span class="word">bank account</span>
+    </span>
+  </div>
+</header>
+
+<main class="denied-page">
+  <div class="denied-card">
+    <div class="ico">!</div>
+    <h1>אין גישה</h1>
+    <p id="msg">האימייל שלך אינו מורשה לגשת למערכת.</p>
+    <a class="btn btn-pri" href="/login">חזרה להתחברות</a>
+  </div>
+</main>
+
+<script>
+  const messages = {
+    notallowed: 'האימייל שלך אינו מורשה לגשת למערכת. פנה למנהל.',
+    unverified: 'כתובת ה-Gmail אינה מאומתת.',
+    state: 'פג תוקף הבקשה. נסה להתחבר שוב.',
+    oauth: 'ההתחברות מול Google נכשלה. נסה שוב.',
+  };
+  const reason = new URLSearchParams(location.search).get('reason');
+  if (reason && messages[reason]) document.getElementById('msg').textContent = messages[reason];
+</script>
+
+</body>
+</html>
