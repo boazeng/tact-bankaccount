@@ -16,7 +16,6 @@ import { installAuth, requireRole } from './auth/index.js';
 const pendingInputs = new Map();
 const PENDING_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
 
-dotenv.config({ path: 'C:/Users/User/Aiprojects/env/bank.env' });
 
 for (const b of listBanks()) {
   upsertBank(b.id, b.nameHe);

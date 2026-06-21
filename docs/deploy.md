@@ -1,167 +1,174 @@
 # Deployment to Mac mini
 
-מדריך התקנה והרצה של TACT BankAccount על מק מיני כשרת ביתי, כולל HTTPS דרך
-תת-דומיין משלך.
+> תואם ל-[runbook המאסטר](../../env/MAC-MINI-APP-INSTALL.md) — OrbStack + Cloudflare Tunnel + auto-deploy webhook.
 
-> כל מקום שבו רשום `<SUBDOMAIN>` — החלף בתת-הדומיין האמיתי (למשל `bank.newavera.co.il`).
-> `<MAC_USER>` — המשתמש שלך על המק מיני (למשל `boaz`).
-
----
-
-## 1. דרישות מקדימות על המק מיני
-
-```bash
-# Node 22 (matches dev box)
-brew install node@22
-node --version  # should print v22.x
-
-# Git + Caddy (for auto-HTTPS reverse proxy) + Chromium for Puppeteer
-brew install git caddy
-brew install --cask google-chrome
-
-# Optional but recommended: pm2 for process management
-npm install -g pm2
-```
+| | |
+|---|---|
+| **App folder** | `~/server/tact-bankaccount` |
+| **Container** | `tact-bankaccount` |
+| **Local port** | `8098` (קונטיינר חושף 3030 פנימי) |
+| **Subdomain** | `tact-bankaccount.newavera.co.il` (או מה שתבחר) |
+| **State volume** | `~/server/tact-bankaccount/data` (SQLite — `tact.db`, `auth.db`) |
+| **Secrets** | `~/server/tact-bankaccount/.env` (chmod 600) |
 
 ---
 
-## 2. קלון את הריפו
+## 1. ריצה ראשונה ב-Mac mini
 
 ```bash
-cd ~
+cd ~/server
 git clone https://github.com/boazeng/tact-bankaccount.git
 cd tact-bankaccount
-npm install
-npx puppeteer browsers install chrome
-```
 
----
+# --- .env: כל הסודות (לא ב-git) ---
+cat > .env <<'EOF'
+# Google OAuth (אותו client של accounting/bookkeeping)
+GOOGLE_OAUTH_CLIENT_ID=...
+GOOGLE_OAUTH_CLIENT_SECRET=...
 
-## 3. סודות — שני קבצים נפרדים
-
-האפליקציה צריכה גישה לשני סטים של credentials. **שניהם נשמרים מחוץ לתיקיית הריפו**.
-
-### `~/tact-secrets/.env`
-```bash
-mkdir -p ~/tact-secrets
-chmod 700 ~/tact-secrets
-```
-
-צור את הקובץ עם:
-```ini
-# === Google OAuth (same client as accounting/bookkeeping) ===
-GOOGLE_OAUTH_CLIENT_ID=<מהקובץ המקומי>
-GOOGLE_OAUTH_CLIENT_SECRET=<מהקובץ המקומי>
-
-# === Session signing ===
-AUTH_SESSION_SECRET=<32+ תווים אקראיים — צור חדש לפרודקשן>
-AUTH_EMERGENCY_TOKEN=<טוקן חירום — צור חדש לפרודקשן>
+# Session (שני ערכים חדשים לפרודקשן — אל תשתף עם dev!)
+AUTH_SESSION_SECRET=<32+ random chars>
+AUTH_EMERGENCY_TOKEN=<random token>
 AUTH_SUPER_ADMIN_EMAIL=boazen@gmail.com
-# AUTH_DISABLED=false  # אל תפעיל בפרודקשן
 
-# === Priority ERP (for Priority match feature) ===
-PRIORITY_URL_REAL=<מהקובץ המקומי>
-PRIORITY_USERNAME=<מהקובץ המקומי>
-PRIORITY_PASSWORD=<מהקובץ המקומי>
+# Priority ERP (אותם ערכים כמו ב-bank-discrepancies)
+PRIORITY_URL_REAL=...
+PRIORITY_USERNAME=...
+PRIORITY_PASSWORD=...
 
-# === Runtime ===
+# Bank credentials (העתק מהמכונה: C:\Users\User\Aiprojects\env\bank.env)
+LEUMI_USERNAME=...
+LEUMI_PASSWORD=...
+LEUMI_URL=...
+
+DISCOUNT_USER_ID=...
+DISCOUNT_PASSWORD=...
+DISCOUNT_URL='https://start.telebank.co.il/login/#/LOGIN_PAGE_SME'
+
+POALIM_USER_ID=...
+POALIM_PASSWORD=...
+POALIM_URL=https://biz2.bankhapoalim.co.il/ng-portals/auth/he/biz-login/authenticate
+
+MIZRACHI_USER_ID=...
+MIZRACHI_PASSWORD=...
+MIZRACHI_URL=https://www.mizrahi-tefahot.co.il/
+
+# Runtime
 PORT=3030
-AUTH_REDIRECT_URI=https://<SUBDOMAIN>/auth/callback
-AUTH_DB_PATH=/Users/<MAC_USER>/tact-secrets/auth.db
-```
+AUTH_REDIRECT_URI=https://tact-bankaccount.newavera.co.il/auth/callback
+AUTH_DB_PATH=/app/data/auth.db
+EOF
+chmod 600 .env
 
-```bash
-chmod 600 ~/tact-secrets/.env
-```
+# --- state (אופציונלי, מעביר היסטוריה מ-Windows) ---
+# מהמכונה המקומית:
+# scp C:\Users\User\Aiprojects\tact-bankaccount\data\tact.db boazenglander@mac-mini:~/server/tact-bankaccount/data/
+# scp C:\Users\User\Aiprojects\env\auth.db boazenglander@mac-mini:~/server/tact-bankaccount/data/
 
-### `~/tact-secrets/bank.env`
-**העתק מהמכונה המקומית** (לא דרך גיט!):
-```powershell
-# מהמכונה (Windows)
-scp "C:\Users\User\Aiprojects\env\bank.env" <MAC_USER>@<mac-mini-ip>:~/tact-secrets/bank.env
-```
-```bash
-# על המק מיני
-chmod 600 ~/tact-secrets/bank.env
-```
+# --- בנייה + הרצה ---
+~/.orbstack/bin/docker compose up -d --build
 
-### עדכון מסלולים בקוד אם צריך
-האפליקציה כיום קוראת מ-`C:/Users/User/Aiprojects/env/.env` ו-`bank.env`.
-על המק נצטרך להגדיר משתני סביבה שיצביעו על המסלולים החדשים, או לשנות את
-טעינת dotenv בקוד. השלב הזה ייעשה בזמן הדפלוי הראשון.
-
----
-
-## 4. עדכון Google OAuth — הוסף את ה-redirect URI החדש
-
-בקונסול Google → APIs & Services → Credentials → Bookkeeping Web OAuth client:
-
-**Authorized redirect URIs** — הוסף:
-```
-https://<SUBDOMAIN>/auth/callback
-```
-
-(הקיים `http://localhost:3030/auth/callback` יכול להישאר לפיתוח).
-
----
-
-## 5. Caddy reverse proxy עם HTTPS אוטומטי
-
-צור `~/Caddyfile`:
-```caddy
-<SUBDOMAIN> {
-    reverse_proxy localhost:3030
-    encode gzip
-}
-```
-
-הפעל את Caddy כשירות:
-```bash
-brew services start caddy
-# Caddy יבקש Let's Encrypt cert אוטומטית
-```
-
-> דורש שה-DNS של `<SUBDOMAIN>` מצביע ל-IP של המק מיני (A record),
-> ושהפורטים 80+443 פתוחים בראוטר/חומת אש.
-
----
-
-## 6. הרץ את האפליקציה (PM2)
-
-```bash
-cd ~/tact-bankaccount
-pm2 start "npm start" --name tact-bankaccount --update-env
-pm2 save
-pm2 startup  # הריצת השרת אוטומטית אחרי reboot
-```
-
-בדיקות:
-```bash
-pm2 logs tact-bankaccount         # לראות לוגים חיים
-curl https://<SUBDOMAIN>/login    # אמור להחזיר את דף הלוגין
+# --- בדיקה לוקאלית ---
+curl -s -o /dev/null -w "local=%{http_code}\n" http://127.0.0.1:8098/login
+# צריך 200 (דף הלוגין)
 ```
 
 ---
 
-## 7. מה לעשות עם הקבצים שעוברים בדפלוי הראשון
+## 2. חיבור Cloudflare Tunnel
 
-לאחר שהאפליקציה רצה ועובדת:
-1. **לוקאלית** — אם רוצים — להעביר את `data/tact.db` מהמכונה המקומית למק (העתקה ידנית, לא דרך git). זה ישמר את ההיסטוריה.
-2. **או** — להריץ סנכרון נקי על המק (יוריד שוב מהבנקים את כל ה-30 הימים האחרונים).
+**א.** ערוך `~/.cloudflared/config.yml` והוסף **לפני** ה-catch-all 404:
+```yaml
+  - hostname: tact-bankaccount.newavera.co.il
+    service: http://localhost:8098
+```
+ולדציה: `/opt/homebrew/bin/cloudflared tunnel ingress validate`
+
+**ב.** ב-Cloudflare dashboard → DNS → Add record:
+- Type: `CNAME`
+- Name: `tact-bankaccount`
+- Target: `ae8d8404-c382-475e-a31d-ad5ee34387e1.cfargotunnel.com`
+- Proxy: 🟠 Proxied
+
+**ג.** הפעל מחדש את ה-tunnel (sudo נדרש — הרץ על ה-Mac עצמו):
+```bash
+sudo launchctl stop com.cloudflare.cloudflared && sudo launchctl start com.cloudflare.cloudflared
+```
+
+**ד.** הוסף את ה-redirect URI ל-Google OAuth client בקונסול:
+```
+https://tact-bankaccount.newavera.co.il/auth/callback
+```
 
 ---
 
-## 8. אבטחה — לפני שעולים live
+## 3. אימות
 
-✅ HTTPS דרך Caddy (Let's Encrypt)
-✅ `.env` ב-`~/tact-secrets/` עם chmod 600
-✅ `AUTH_SESSION_SECRET` חדש לפרודקשן
-✅ `AUTH_EMERGENCY_TOKEN` חדש לפרודקשן (כל מי שיודע אותו עוקף Google!)
-✅ אל תפתח את פורט 3030 ישירות באינטרנט — רק 443 דרך Caddy
-✅ **הגבל גישה ל-`/users.html`** — רק admin רואה אותו (כבר במידלוור)
-✅ Tailscale אם רוצים לוודא שרק LAN/VPN רואים את השרת לפני HTTPS
+```bash
+# מה-Mac או מכל מקום:
+curl -sI https://tact-bankaccount.newavera.co.il/login   # 200
 
-⚠️ הסקרייפר משתמש ב-Puppeteer headless שמתחבר לאתרי הבנקים עם הסיסמאות.
-אם השרת נפרץ, התוקף יכול לקבל את הסיסמאות מהזיכרון של התהליך. לכן:
-- חיוני שהמק מיני יהיה מאחורי חומת אש
-- חיוני שיהיו עדכוני macOS/brew סדירים
+# לוגים חיים מהקונטיינר:
+~/.orbstack/bin/docker logs tact-bankaccount -f
+```
+
+פתח בדפדפן: `https://tact-bankaccount.newavera.co.il` → Google OAuth → אמור להיכנס.
+
+---
+
+## 4. אוטו-deploy (git push → פרודקשן) ⭐
+
+הוסף מיפוי ב-`~/server/deployer/deploy.sh`:
+```bash
+case "$REPO" in
+  ...
+  tact-bankaccount) APP_DIR=~/server/tact-bankaccount ;;
+  ...
+esac
+```
+
+ב-GitHub: repo → Settings → Webhooks → Add webhook:
+- Payload URL: `https://deploy.newavera.co.il`
+- Content type: `application/json`
+- Just the push event
+
+מעכשיו `git push origin main` → פרוס תוך ~30 שניות. לוג: `tail ~/server/deployer/deploy.log`.
+
+⚠️ **בנייה ראשונה לוקחת ~3-5 דקות** (הורדת Chromium + dependencies). פושים עוקבים מהירים יותר אם המודולים לא השתנו.
+
+---
+
+## 5. עדכון רישומי הפורט
+
+עדכן ב-`~/server/readme_load_server.md` ובmrשרשם הפורטים של [המאסטר](../../env/MAC-MINI-APP-INSTALL.md):
+```
+| 8098 | tact-bankaccount | tact-bankaccount.newavera.co.il |
+| 8099+ | פנוי לפרויקט הבא |
+```
+
+---
+
+## 6. תחזוקה
+
+### Backup
+ה-state ב-`~/server/tact-bankaccount/data/` (תיקיית volume). הוסף ל-backup הקיים שלך אם יש.
+
+### שדרוג סקרייפר
+ב-dev: עדכן + push. אם autodeploy פעיל → אוטומטית. אחרת ידנית על המק:
+```bash
+cd ~/server/tact-bankaccount
+git pull
+~/.orbstack/bin/docker compose up -d --build --force-recreate
+```
+
+### צריך לרענן את ה-Chromium?
+המק M4 הוא arm64. ה-Dockerfile משתמש ב-Debian's Chromium (לא ב-Puppeteer's bundled). שדרוג נעשה אוטומטית ב-`docker compose up --build` כשמתעדכן ה-base image.
+
+---
+
+## גוטצ'ות צפויים
+
+1. **shm_size: '1gb'** — חובה ב-docker-compose, אחרת Chromium קורס בעמודי בנקים כבדים (default Docker = 64MB).
+2. **SMS 2FA של הפועלים** — עדיין דורש שמשתמש יזין קוד דרך ה-UI שלנו. לא יעבוד עם cron אוטומטי בלי שינוי. בסנכרון ראשון מהמק → המשתמש מתחבר ל-`https://tact-bankaccount.newavera.co.il`, לוחץ סנכרון, מקבל SMS, מזין במודאל.
+3. **auth.db ראשוני** — אם לא העתקת מהמכונה, רק ה-super-admin (boazen@gmail.com) נכנס. הוא יוסיף משתמשים אחרים ב-`/users.html`.
+4. **Time zone** — `TZ=Asia/Jerusalem` ב-Dockerfile. ודא ש-fmtDate ב-UI מציג תאריכים נכונים.

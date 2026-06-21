@@ -8,9 +8,7 @@
 //
 // Uses the same Priority credentials as the accounting project:
 //   PRIORITY_URL_REAL, PRIORITY_USERNAME, PRIORITY_PASSWORD
-import dotenv from 'dotenv';
-
-dotenv.config({ path: 'C:/Users/User/Aiprojects/env/.env' });
+// Env loading is handled by the server entry point.
 
 const PRIORITY_URL = (process.env.PRIORITY_URL_REAL || '').replace(/\/$/, '');
 const PRIORITY_USERNAME = process.env.PRIORITY_USERNAME || '';

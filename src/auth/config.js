@@ -1,7 +1,5 @@
 // Mirror of shared_auth/config.py — same env var names so creds carry over.
-import dotenv from 'dotenv';
-
-dotenv.config({ path: 'C:/Users/User/Aiprojects/env/.env' });
+// Env file loading is handled by the server entry point (works in dev + Docker).
 
 const required = (name) => {
   const v = (process.env[name] || '').trim();

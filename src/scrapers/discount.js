@@ -23,6 +23,7 @@ export async function scrapeDiscount({ credentials, daysBack = 30, showBrowser =
   const browser = await puppeteer.launch({
     headless: !showBrowser,
     defaultViewport: { width: 1400, height: 900 },
+    args: ['--no-sandbox', '--disable-setuid-sandbox'],
   });
 
   try {

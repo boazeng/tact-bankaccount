@@ -1,0 +1,13 @@
+services:
+  tact-bankaccount:
+    build: .
+    container_name: tact-bankaccount
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8098:3030"   # only localhost — Cloudflare Tunnel connects locally
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data        # SQLite app DB (transactions, accounts) survives restarts
+    # Chromium needs a bigger /dev/shm than Docker's default 64MB or it crashes on heavy pages
+    shm_size: '1gb'

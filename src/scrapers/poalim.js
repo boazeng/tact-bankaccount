@@ -37,7 +37,10 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
   const browser = await puppeteer.launch({
     headless: !showBrowser,
     defaultViewport: showBrowser ? null : { width: 1400, height: 900 },
-    args: showBrowser ? ['--start-maximized'] : [],
+    args: [
+      '--no-sandbox', '--disable-setuid-sandbox',
+      ...(showBrowser ? ['--start-maximized'] : []),
+    ],
   });
 
   try {
