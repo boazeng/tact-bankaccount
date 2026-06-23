@@ -122,8 +122,9 @@ export async function fetchCashBanks() {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
+  // Fetch all fields so we can see exactly what Priority returns for CASHBANKS.
+  // Once field names are confirmed, we can narrow with $select.
   const params = new URLSearchParams({
-    '$select': 'CASHNAME,BANKNAME,BRANCHNUM,ACCOUNTNUM,BANKNUM',
     '$top': '200',
     '$orderby': 'CASHNAME',
   });

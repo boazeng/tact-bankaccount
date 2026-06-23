@@ -380,6 +380,8 @@ app.post('/api/priority/auto-match-cashnames', requireRole('approver'), async (r
       unmatched: allAccounts.length - updates.length,
       results,
       cashBanksCount: cashBanks.length,
+      // First record fields — lets us verify the exact Priority field names
+      cashBanksSample: cashBanks[0] ? Object.keys(cashBanks[0]) : [],
     });
   } catch (e) {
     console.error('auto-match-cashnames error:', e);
