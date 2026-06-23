@@ -115,69 +115,74 @@ export async function checkAgainstPriority(ourTxns) {
 }
 
 /**
- * Fetch distinct cash-journal → bank-account mappings from BANKPAGES.
- * BANKPAGES is the exposed OData entity for Priority's CASH_BANKS screen.
- * Returns deduplicated array of { CASHNAME, BANKNAME, BRANCH, PAYACCOUNT }.
+ * Fetch all bank-account cash-journals from Priority's CASH entity.
+ * CASH is the OData entity for the CASH_BANKS screen.
+ * Filters to CASHTYPEDES = 'חשבון בנק' and returns { CASHNAME, CASHDES }.
+ * CASHDES contains the branch-account pattern, e.g. "בנק פועלים 610-681453 יעל ישראל".
  */
 export async function fetchCashBanks() {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
   const params = new URLSearchParams({
-    '$select': 'CASHNAME,BANKNAME,BRANCH,PAYACCOUNT',
+    '$select': 'CASHNAME,CASHDES,CASHTYPEDES',
+    '$filter': "CASHTYPEDES eq 'חשבון בנק'",
     '$top': '500',
   });
-  const url = `${PRIORITY_URL}/BANKPAGES?${params}`;
+  const url = `${PRIORITY_URL}/CASH?${params}`;
   const r = await fetch(url, { headers });
   if (!r.ok) {
     const text = await r.text().catch(() => '');
-    throw new Error(`Priority BANKPAGES query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Priority CASH query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
   }
   const data = await r.json();
-  // Deduplicate — same cashname can appear once per bank statement page
-  const seen = new Set();
-  return (data.value || []).filter(row => {
-    const key = `${row.CASHNAME}|${row.BRANCH}|${row.PAYACCOUNT}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
+  return data.value || [];
 }
 
 /**
  * Auto-match a single bank account to a Priority CASHNAME.
  *
- * Matching logic (in priority order):
- *  1. branch_id matches BRANCHNUM AND account number from masked_number matches ACCOUNTNUM
- *  2. Account number from masked_number matches ACCOUNTNUM alone (if unique)
+ * Uses Priority's CASH entity (CASHDES field contains "branch-account" pattern).
+ * Example CASHDES: "בנק פועלים 610-681453 יעל ישראל"
+ *
+ * Matching logic:
+ *  Pass 1: branch + account both found in CASHDES
+ *  Pass 2: account number alone (only if exactly one hit among bank-type entries)
  *
  * account: { branch_id, masked_number }
  * cashBanks: array from fetchCashBanks()
  * Returns CASHNAME string or null if no match.
  */
 export function matchCashnameToAccount(account, cashBanks) {
-  // cashBanks rows use BRANCH + PAYACCOUNT (from BANKPAGES entity)
   const strip = (s) => String(s || '').replace(/^0+/, '').replace(/\D/g, '');
 
   const ourBranch = strip(account.branch_id);
   const maskedParts = (account.masked_number || '').split(/[-/]/);
   const ourAccount = strip(maskedParts[1] || maskedParts[0] || '');
 
-  if (!ourAccount) return null;
+  if (!ourAccount || ourAccount.length < 4) return null;
 
-  // Pass 1: branch + account both match
+  // Extract all digit-sequences from CASHDES for comparison
+  const getDigitGroups = (des) => (des || '').match(/\d+/g) || [];
+
+  // Pass 1: CASHDES contains both our branch digits AND our account digits
   for (const cb of cashBanks) {
-    const cbBranch = strip(cb.BRANCH);
-    const cbAccount = strip(cb.PAYACCOUNT);
-    if (!cbAccount) continue;
-    if (cbBranch === ourBranch && ourAccount.startsWith(cbAccount)) return cb.CASHNAME;
-    if (cbBranch === ourBranch && cbAccount.startsWith(ourAccount)) return cb.CASHNAME;
+    const groups = getDigitGroups(cb.CASHDES);
+    const hasBranch = ourBranch && groups.some(g => strip(g) === ourBranch);
+    const hasAccount = groups.some(g => {
+      const sg = strip(g);
+      return sg.length >= 4 && (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
+    });
+    if (hasBranch && hasAccount) return cb.CASHNAME;
   }
 
-  // Pass 2: account number alone (only if exactly one hit)
+  // Pass 2: account number alone (only if exactly one match)
   const byAccount = cashBanks.filter(cb => {
-    const cbAccount = strip(cb.PAYACCOUNT);
-    return cbAccount.length >= 4 && (ourAccount.startsWith(cbAccount) || cbAccount.startsWith(ourAccount));
+    const groups = getDigitGroups(cb.CASHDES);
+    return groups.some(g => {
+      const sg = strip(g);
+      return sg.length >= 4 && (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
+    });
   });
   if (byAccount.length === 1) return byAccount[0].CASHNAME;
 
