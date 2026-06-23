@@ -395,6 +395,7 @@ header {
 .sync-log .line { line-height: 1.5; }
 .sync-log .line.success { color: var(--color-pos); }
 .sync-log .line.error { color: var(--color-accent); }
+.sync-log .line.warn { color: #b07700; }
 .sync-summary {
   display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px;
   padding: 14px; background: var(--color-bg); border-radius: var(--radius-md);

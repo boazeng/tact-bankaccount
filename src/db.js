@@ -261,6 +261,7 @@ export function listBanksWithAccounts() {
   const accountsByBank = db.prepare(`
     SELECT a.id, a.bank_id, a.account_index, a.masked_number, a.corporate_name,
            a.iban, a.last_balance, a.last_sync_at, a.branch_id, a.branch_name, a.is_active,
+           a.priority_cashname,
            (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id) AS txn_count,
            (SELECT MAX(date) FROM transactions t WHERE t.account_id = a.id) AS last_txn_date
     FROM accounts a

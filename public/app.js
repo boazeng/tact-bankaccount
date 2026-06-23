@@ -531,6 +531,82 @@ async function syncAllBanks() {
   setTimeout(() => renderIndex(), 800);
 }
 
+async function pushAllToPriority() {
+  const res = await fetch('/api/banks');
+  const { banks } = await res.json();
+  const allAccounts = banks.flatMap(b => b.accounts.filter(a => a.is_active));
+
+  const panel = document.getElementById('sync-panel');
+  const logEl = document.getElementById('sync-log');
+  const title = document.getElementById('sync-title');
+  const summaryEl = document.getElementById('sync-summary');
+
+  panel.classList.remove('done', 'error');
+  panel.classList.add('open');
+  logEl.innerHTML = '';
+  summaryEl.style.display = 'none';
+  title.textContent = 'קליטת תנועות לפריוריטי';
+  document.getElementById('sync-close').onclick = () => panel.classList.remove('open');
+
+  const addLine = (text, cls = '') => {
+    const div = document.createElement('div');
+    div.className = 'line ' + cls;
+    div.textContent = '› ' + text;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  const withCashname = allAccounts.filter(a => a.priority_cashname);
+  const withoutCashname = allAccounts.filter(a => !a.priority_cashname);
+
+  if (withoutCashname.length) {
+    addLine(`${withoutCashname.length} חשבונות ללא קופה מוגדרת — ידולגו (הגדר קופה בדף כל חשבון)`);
+  }
+  if (!withCashname.length) {
+    addLine('אין חשבונות עם קופה מוגדרת בפריוריטי', 'error');
+    panel.classList.add('error');
+    return;
+  }
+
+  let totalMissing = 0, totalMatched = 0, totalErrors = 0;
+
+  for (const acc of withCashname) {
+    const label = `${acc.corporate_name || acc.masked_number} (${acc.priority_cashname})`;
+    addLine(`בודק ${label}…`);
+    try {
+      const r = await fetch(`/api/accounts/${acc.id}/push-to-priority`, { method: 'POST' });
+      const data = await r.json();
+      if (!r.ok) {
+        addLine(`✗ ${label}: ${data.error || r.status}`, 'error');
+        totalErrors++;
+        continue;
+      }
+      totalMatched += data.matched || 0;
+      totalMissing += data.missing || 0;
+      if (data.missing === 0) {
+        addLine(`✓ ${label}: כל ${data.matched} תנועות כבר בפריוריטי`, 'success');
+      } else {
+        addLine(`⚠ ${label}: ${data.matched} בפריוריטי · ${data.missing} חסרות (בדיקה בלבד, לא קלטנו)`, 'warn');
+      }
+    } catch (e) {
+      addLine(`✗ ${label}: ${e.message}`, 'error');
+      totalErrors++;
+    }
+  }
+
+  panel.classList.add('done');
+  document.getElementById('sum-new').textContent = totalMissing;
+  document.getElementById('sum-dup').textContent = totalMatched;
+  document.getElementById('sum-accounts').textContent = withCashname.length;
+  summaryEl.style.display = 'grid';
+  document.getElementById('sum-new').closest('.m').querySelector('.lbl').textContent = 'חסרות בפריוריטי';
+  document.getElementById('sum-dup').closest('.m').querySelector('.lbl').textContent = 'כבר בפריוריטי';
+  addLine(
+    totalErrors ? `סיום עם ${totalErrors} שגיאות` : `סיום — ${totalMissing} תנועות חסרות, ${totalMatched} קיימות`,
+    totalErrors ? 'error' : 'success',
+  );
+}
+
 /* ───────── account page ───────── */
 async function renderAccountPage() {
   const id = new URLSearchParams(location.search).get('id');
