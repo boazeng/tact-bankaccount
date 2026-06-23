@@ -17,7 +17,40 @@ import {
   listBanksWithAccounts, getAccount, getTransactions,
   setAccountActive, getInactiveMaskedNumbers,
   getTransactionsForPriorityCheck, updatePriorityStatus,
+  getAccountBalances,
 } from './db.js';
+
+const FLOW_BALANCE_MAPPING = [
+  { bankId: 'poalim',   match: 'חניה',   flowKey: 'חניה_פועלים' },
+  { bankId: 'poalim',   match: 'אנרגיה', flowKey: 'אנרגיה_פועלים' },
+  { bankId: 'discount', match: null,      flowKey: 'אחזקה_דיסקונט' },
+  { bankId: 'mizrachi', match: null,      flowKey: 'אחזקה_מזרחי' },
+];
+
+async function pushBalancesToFlow() {
+  const flowUrl = process.env.FLOW_API_URL;
+  const flowKey = process.env.FLOW_API_KEY;
+  if (!flowUrl || !flowKey) return;
+
+  const accounts = getAccountBalances();
+  const payload = {};
+  for (const rule of FLOW_BALANCE_MAPPING) {
+    const acc = accounts.find(a =>
+      a.bank_id === rule.bankId &&
+      (!rule.match || (a.corporate_name || '').includes(rule.match))
+    );
+    if (acc != null) payload[rule.flowKey] = acc.last_balance;
+  }
+  if (Object.keys(payload).length === 0) return;
+
+  const res = await fetch(`${flowUrl}/api/bank-balances-push`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${flowKey}` },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error(`flow responded ${res.status}`);
+  console.log('[flow-push] balances pushed:', payload);
+}
 import { checkAgainstPriority, priorityConfigured } from './priority/check.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
@@ -215,6 +248,7 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
       totalDedupSkipped: totalAll - totalNew,
       perAccount,
     });
+    pushBalancesToFlow().catch(e => console.error('[flow-push] failed:', e.message));
   } catch (err) {
     console.error('Sync error:', err);
     send('error', { message: err.message, stack: err.stack?.split('\n').slice(0, 5).join('\n') });

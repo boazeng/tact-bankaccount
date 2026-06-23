@@ -325,6 +325,14 @@ export function getTransactions(accountId, { limit = 200, offset = 0 } = {}) {
   `).all(accountId, limit, offset);
 }
 
+export function getAccountBalances() {
+  return db.prepare(`
+    SELECT bank_id, corporate_name, last_balance
+    FROM accounts
+    WHERE last_balance IS NOT NULL AND is_active = 1
+  `).all();
+}
+
 export function getTransactionsForPriorityCheck(accountId) {
   return db.prepare(`
     SELECT id, date, amount

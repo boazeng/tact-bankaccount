@@ -62,6 +62,10 @@ MIZRACHI_URL=https://www.mizrahi-tefahot.co.il/
 PORT=3030
 AUTH_REDIRECT_URI=https://tact-bankaccount.newavera.co.il/auth/callback
 AUTH_DB_PATH=/app/data/auth.db
+
+# Flow integration — push bank balances after every sync
+FLOW_API_URL=https://flow.newavera.co.il
+FLOW_API_KEY=<same value as FLOW_PUSH_API_KEY in flow's .env>
 EOF
 chmod 600 .env
 
