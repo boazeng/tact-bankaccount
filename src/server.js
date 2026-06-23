@@ -18,6 +18,7 @@ import {
   setAccountActive, getInactiveMaskedNumbers,
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
+  setAccountPriorityCashname, getTransactionsForPush,
 } from './db.js';
 
 const FLOW_BALANCE_MAPPING = [
@@ -51,7 +52,8 @@ async function pushBalancesToFlow() {
   if (!res.ok) throw new Error(`flow responded ${res.status}`);
   console.log('[flow-push] balances pushed:', payload);
 }
-import { checkAgainstPriority, priorityConfigured } from './priority/check.js';
+import { checkAgainstPriority, priorityConfigured, fetchCashBanks } from './priority/check.js';
+import { dryRunPush } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
   listStatus as listBankCredentialsStatus,
@@ -341,6 +343,70 @@ app.post('/api/sync/:syncId/sms-code', requireRole('approver'), (req, res) => {
   pendingInputs.delete(syncId);
   pending.resolve(code);
   res.json({ ok: true });
+});
+
+// ─── Priority push (dry-run) ─────────────────────────────────────────────
+
+app.get('/api/priority/cash-banks', requireRole('approver'), async (req, res) => {
+  if (!priorityConfigured()) {
+    return res.status(500).json({ error: 'Priority not configured in env' });
+  }
+  try {
+    const banks = await fetchCashBanks();
+    res.json({ banks });
+  } catch (e) {
+    console.error('fetchCashBanks error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.put('/api/accounts/:id/priority-cashname', requireRole('approver'), (req, res) => {
+  const accountId = Number(req.params.id);
+  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  const cashname = (req.body?.cashname || '').trim() || null;
+  setAccountPriorityCashname(accountId, cashname);
+  res.json({ ok: true, cashname });
+});
+
+app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  if (!priorityConfigured()) {
+    return res.status(500).json({ error: 'Priority not configured in env' });
+  }
+  if (!acc.priority_cashname) {
+    return res.status(400).json({ error: 'לא הוגדר שם קופה בפריוריטי לחשבון זה' });
+  }
+  try {
+    // Step 1: check which transactions exist in Priority (updates in_priority column)
+    const allTxns = getTransactionsForPriorityCheck(accountId);
+    const checkResult = await checkAgainstPriority(allTxns);
+    updatePriorityStatus(checkResult.updates);
+
+    // Step 2: collect transactions not found in Priority and not yet pushed
+    const missing = getTransactionsForPush(accountId);
+
+    // Step 3: build dry-run payload (no actual POST to Priority)
+    const dry = dryRunPush(missing, acc.priority_cashname);
+
+    res.json({
+      ok: true,
+      dryRun: true,
+      accountId,
+      cashName: acc.priority_cashname,
+      checked: checkResult.ourTxnsChecked,
+      matched: checkResult.matched,
+      missing: missing.length,
+      preview: dry.lines.slice(0, 50),
+      previewTotal: dry.lines.length,
+      bankBalance: acc.last_balance,
+      dateRange: checkResult.dateRange,
+    });
+  } catch (e) {
+    console.error('Push to Priority error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));

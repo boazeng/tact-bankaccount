@@ -104,6 +104,12 @@ if (!txnCols.includes('priority_checked_at')) {
 if (!txnCols.includes('priority_bankpage')) {
   db.exec(`ALTER TABLE transactions ADD COLUMN priority_bankpage TEXT`);
 }
+if (!txnCols.includes('pushed_to_priority_at')) {
+  db.exec(`ALTER TABLE transactions ADD COLUMN pushed_to_priority_at TEXT`);
+}
+if (!accountCols.includes('priority_cashname')) {
+  db.exec(`ALTER TABLE accounts ADD COLUMN priority_cashname TEXT`);
+}
 
 // One-time backfill: Discount uses the same Urn for transfer + its associated
 // fee, so legacy rows have bank_transaction_id = bare Urn. Append the bank-
@@ -356,6 +362,35 @@ export function updatePriorityStatus(updates) {
     }
   });
   tx(updates);
+}
+
+const stmtSetPriorityCashname = db.prepare(
+  `UPDATE accounts SET priority_cashname = ? WHERE id = ?`,
+);
+export function setAccountPriorityCashname(accountId, cashname) {
+  stmtSetPriorityCashname.run(cashname ?? null, accountId);
+}
+
+export function getTransactionsForPush(accountId) {
+  return db.prepare(`
+    SELECT id, date, description, amount, reference_number
+    FROM transactions
+    WHERE account_id = ?
+      AND in_priority = 0
+      AND pushed_to_priority_at IS NULL
+    ORDER BY date, id
+  `).all(accountId);
+}
+
+export function markTransactionsPushed(ids) {
+  const now = new Date().toISOString();
+  const tx = db.transaction((idList) => {
+    const stmt = db.prepare(
+      `UPDATE transactions SET pushed_to_priority_at = ?, in_priority = 1 WHERE id = ?`,
+    );
+    for (const id of idList) stmt.run(now, id);
+  });
+  tx(ids);
 }
 
 export default db;

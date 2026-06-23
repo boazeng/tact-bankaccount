@@ -114,4 +114,27 @@ export async function checkAgainstPriority(ourTxns) {
   };
 }
 
+/**
+ * Fetch all CASHBANKS rows (cash journals / bank accounts configured in Priority).
+ * Returns array of { CASHNAME, BANKNAME }.
+ */
+export async function fetchCashBanks() {
+  if (!priorityConfigured()) {
+    throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
+  }
+  const params = new URLSearchParams({
+    '$select': 'CASHNAME,BANKNAME',
+    '$top': '200',
+    '$orderby': 'CASHNAME',
+  });
+  const url = `${PRIORITY_URL}/CASHBANKS?${params}`;
+  const r = await fetch(url, { headers });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`Priority CASHBANKS query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value || [];
+}
+
 export { priorityConfigured };

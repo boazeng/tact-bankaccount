@@ -536,10 +536,16 @@ async function renderAccountPage() {
   const id = new URLSearchParams(location.search).get('id');
   if (!id) return;
 
+  renderUserChip();
+
   try {
-    const res = await fetch(`/api/accounts/${id}/transactions?limit=500`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { account, transactions } = await res.json();
+    const [txnRes, cashBanksRes] = await Promise.all([
+      fetch(`/api/accounts/${id}/transactions?limit=500`),
+      fetch('/api/priority/cash-banks').catch(() => null),
+    ]);
+    if (!txnRes.ok) throw new Error(`HTTP ${txnRes.status}`);
+    const { account, transactions } = await txnRes.json();
+    const cashBanks = (cashBanksRes?.ok ? (await cashBanksRes.json().catch(() => ({}))).banks : null) || [];
 
     document.title = `TACT · ${account.corporate_name || account.masked_number}`;
 
@@ -642,6 +648,26 @@ async function renderAccountPage() {
     const balanceOk = transactions.filter(t => t._balance_check === 'ok').length;
     const balanceMismatch = transactions.filter(t => t._balance_check === 'mismatch').length;
 
+    const cashnameOptions = cashBanks.length
+      ? cashBanks.map(b =>
+          `<option value="${escapeHtml(b.CASHNAME)}" ${b.CASHNAME === account.priority_cashname ? 'selected' : ''}>`
+          + escapeHtml(b.CASHNAME) + (b.BANKNAME ? ' — ' + escapeHtml(b.BANKNAME) : '')
+          + '</option>',
+        ).join('')
+      : (account.priority_cashname
+          ? `<option value="${escapeHtml(account.priority_cashname)}" selected>${escapeHtml(account.priority_cashname)}</option>`
+          : '');
+
+    const cashnameControl = cashBanks.length
+      ? `<select id="cashname-select" class="cashname-select">
+           <option value="">בחר קופה...</option>
+           ${cashnameOptions}
+         </select>`
+      : `<input id="cashname-select" type="text" class="cashname-input"
+             placeholder="שם קופה בפריוריטי" value="${escapeHtml(account.priority_cashname || '')}">`;
+
+    const hasCashname = !!account.priority_cashname;
+
     container.innerHTML = `
       <div class="priority-check-bar">
         <button class="btn btn-pri btn-sm" id="check-priority-btn">↻ בדוק מול פריוריטי</button>
@@ -656,6 +682,17 @@ async function renderAccountPage() {
         </div>
         ${lastChecked ? `<div class="last">בדיקה אחרונה: ${fmtDateTime(lastChecked)}</div>` : ''}
       </div>
+      <div class="priority-push-bar">
+        <span class="cashname-label">קופה בפריוריטי:</span>
+        ${cashnameControl}
+        <button class="btn btn-ghost btn-sm" id="save-cashname-btn">שמור</button>
+        <div class="spacer"></div>
+        <button class="btn btn-push btn-sm" id="push-priority-btn"
+          ${!hasCashname ? 'disabled title="יש להגדיר קופה תחילה"' : ''}>
+          ↑ קלוט בפריוריטי
+        </button>
+      </div>
+      <div id="priority-push-result"></div>
       <div class="txn-table-wrap">
         <table class="txn-table">
           <thead>
@@ -678,6 +715,8 @@ async function renderAccountPage() {
     `;
 
     document.getElementById('check-priority-btn').addEventListener('click', runPriorityCheck);
+    document.getElementById('save-cashname-btn').addEventListener('click', () => savePriorityCashname(id));
+    document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
   } catch (e) {
     document.getElementById('txn-container').innerHTML =
       `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
@@ -740,6 +779,108 @@ async function runPriorityCheck() {
   } catch (e) {
     alert('שגיאה: ' + e.message);
     btn.textContent = originalText;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function savePriorityCashname(id) {
+  const select = document.getElementById('cashname-select');
+  const cashname = (select.value || '').trim();
+  const btn = document.getElementById('save-cashname-btn');
+  const pushBtn = document.getElementById('push-priority-btn');
+  btn.disabled = true;
+  btn.textContent = '...';
+  try {
+    const r = await fetch(`/api/accounts/${id}/priority-cashname`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cashname }),
+    });
+    const data = await r.json();
+    if (!r.ok) {
+      alert('שגיאה בשמירת קופה: ' + (data.error || r.status));
+      return;
+    }
+    btn.textContent = '✓ נשמר';
+    if (pushBtn) pushBtn.disabled = !cashname;
+    setTimeout(() => { btn.textContent = 'שמור'; btn.disabled = false; }, 2000);
+  } catch (e) {
+    alert('שגיאה: ' + e.message);
+    btn.textContent = 'שמור';
+    btn.disabled = false;
+  }
+}
+
+async function runPriorityPush(id) {
+  const btn = document.getElementById('push-priority-btn');
+  const resultEl = document.getElementById('priority-push-result');
+  const origText = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ בודק...';
+  resultEl.innerHTML = '';
+
+  try {
+    const r = await fetch(`/api/accounts/${id}/push-to-priority`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) {
+      alert('שגיאה: ' + (data.error || r.status));
+      return;
+    }
+
+    const previewRows = (data.preview || []).map(line => {
+      const amount = line.CREDIT > 0 ? line.CREDIT : -line.DEBIT;
+      const amtCls = amount >= 0 ? 'pos' : 'neg';
+      return `
+        <tr>
+          <td class="date">${fmtDate((line.CURDATE || '').slice(0, 10))}</td>
+          <td class="desc">${escapeHtml(line.DETAILS)}</td>
+          <td class="ref">${escapeHtml(line.REFERENCE || '')}</td>
+          <td class="num ${amtCls}">${fmtMoney(amount)}</td>
+        </tr>`;
+    }).join('');
+
+    const moreNote = data.previewTotal > (data.preview || []).length
+      ? `<div class="push-more-note">ועוד ${data.previewTotal - data.preview.length} תנועות נוספות...</div>`
+      : '';
+
+    resultEl.innerHTML = data.missing === 0
+      ? `<div class="push-result-card push-all-ok">
+           ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
+         </div>`
+      : `<div class="push-result-card">
+           <div class="push-result-header">
+             <div class="push-stat"><span class="num green">${data.matched}</span> כבר בפריוריטי</div>
+             <div class="push-stat"><span class="num red">${data.missing}</span> חסרות</div>
+             <div class="push-stat">קופה: <code>${escapeHtml(data.cashName)}</code></div>
+             ${data.bankBalance != null
+               ? `<div class="push-stat">יתרת בנק: <span class="num">${fmtMoney(data.bankBalance)}</span></div>`
+               : ''}
+           </div>
+           <div class="push-preview-label">תנועות שיקלטו (${data.previewTotal}):</div>
+           <div class="txn-table-wrap push-preview-table">
+             <table class="txn-table">
+               <thead>
+                 <tr>
+                   <th style="width:110px">תאריך</th>
+                   <th>תיאור</th>
+                   <th style="width:110px">אסמכתא</th>
+                   <th style="width:120px;text-align:left;">סכום</th>
+                 </tr>
+               </thead>
+               <tbody>${previewRows}</tbody>
+             </table>
+           </div>
+           ${moreNote}
+           <div class="push-dry-run-note">
+             ⚠ מצב בדיקה בלבד — לא נשלח לפריוריטי
+           </div>
+         </div>`;
+
+    btn.textContent = origText;
+  } catch (e) {
+    alert('שגיאה: ' + e.message);
+    btn.textContent = origText;
   } finally {
     btn.disabled = false;
   }
