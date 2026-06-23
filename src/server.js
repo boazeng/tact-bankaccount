@@ -19,6 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush,
+  batchSetPriorityCashnames,
 } from './db.js';
 
 const FLOW_BALANCE_MAPPING = [
@@ -52,7 +53,7 @@ async function pushBalancesToFlow() {
   if (!res.ok) throw new Error(`flow responded ${res.status}`);
   console.log('[flow-push] balances pushed:', payload);
 }
-import { checkAgainstPriority, priorityConfigured, fetchCashBanks } from './priority/check.js';
+import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount } from './priority/check.js';
 import { dryRunPush } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
@@ -346,6 +347,45 @@ app.post('/api/sync/:syncId/sms-code', requireRole('approver'), (req, res) => {
 });
 
 // ─── Priority push (dry-run) ─────────────────────────────────────────────
+
+// Auto-match all accounts to their Priority CASHNAME based on branch+account number.
+// Saves the matches to DB and returns per-account results.
+app.post('/api/priority/auto-match-cashnames', requireRole('approver'), async (req, res) => {
+  if (!priorityConfigured()) {
+    return res.status(500).json({ error: 'Priority not configured in env' });
+  }
+  try {
+    const cashBanks = await fetchCashBanks();
+    const banks = listBanksWithAccounts();
+    const allAccounts = banks.flatMap(b => b.accounts.filter(a => a.is_active));
+
+    const updates = [];
+    const results = allAccounts.map(acc => {
+      const cashname = matchCashnameToAccount(acc, cashBanks);
+      if (cashname) updates.push({ accountId: acc.id, cashname });
+      return {
+        accountId: acc.id,
+        maskedNumber: acc.masked_number,
+        corporateName: acc.corporate_name,
+        cashname,
+        matched: !!cashname,
+      };
+    });
+
+    if (updates.length) batchSetPriorityCashnames(updates);
+
+    res.json({
+      ok: true,
+      matched: updates.length,
+      unmatched: allAccounts.length - updates.length,
+      results,
+      cashBanksCount: cashBanks.length,
+    });
+  } catch (e) {
+    console.error('auto-match-cashnames error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
 
 app.get('/api/priority/cash-banks', requireRole('approver'), async (req, res) => {
   if (!priorityConfigured()) {

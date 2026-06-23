@@ -542,6 +542,13 @@ header {
   font-size: 0.85rem; color: var(--color-text-light); white-space: nowrap;
 }
 .priority-push-bar .spacer { flex: 1; }
+.cashname-tag {
+  font-family: var(--font-family-en); font-size: 0.85rem;
+  background: var(--color-bg); padding: 3px 8px;
+  border-radius: var(--radius); border: 1px solid var(--color-border);
+  color: var(--color-text);
+}
+.cashname-tag.missing { font-family: var(--font-family); color: var(--color-text-light); background: none; border: none; padding: 0; font-size: 0.83rem; }
 .cashname-select, .cashname-input {
   font-family: var(--font-family); font-size: 0.85rem;
   padding: 5px 10px; border: 1px solid var(--color-border);

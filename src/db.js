@@ -372,6 +372,14 @@ export function setAccountPriorityCashname(accountId, cashname) {
   stmtSetPriorityCashname.run(cashname ?? null, accountId);
 }
 
+export function batchSetPriorityCashnames(updates) {
+  // updates: [{ accountId, cashname }]
+  const tx = db.transaction((items) => {
+    for (const u of items) stmtSetPriorityCashname.run(u.cashname ?? null, u.accountId);
+  });
+  tx(updates);
+}
+
 export function getTransactionsForPush(accountId) {
   return db.prepare(`
     SELECT id, date, description, amount, reference_number

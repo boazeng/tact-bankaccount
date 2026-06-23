@@ -532,10 +532,6 @@ async function syncAllBanks() {
 }
 
 async function pushAllToPriority() {
-  const res = await fetch('/api/banks');
-  const { banks } = await res.json();
-  const allAccounts = banks.flatMap(b => b.accounts.filter(a => a.is_active));
-
   const panel = document.getElementById('sync-panel');
   const logEl = document.getElementById('sync-log');
   const title = document.getElementById('sync-title');
@@ -556,23 +552,40 @@ async function pushAllToPriority() {
     logEl.scrollTop = logEl.scrollHeight;
   };
 
-  const withCashname = allAccounts.filter(a => a.priority_cashname);
-  const withoutCashname = allAccounts.filter(a => !a.priority_cashname);
-
-  if (withoutCashname.length) {
-    addLine(`${withoutCashname.length} חשבונות ללא קופה מוגדרת — ידולגו (הגדר קופה בדף כל חשבון)`);
-  }
-  if (!withCashname.length) {
-    addLine('אין חשבונות עם קופה מוגדרת בפריוריטי', 'error');
+  // Step 1: auto-match accounts to Priority cashnames
+  addLine('מזהה קופות אוטומטית מפריוריטי…');
+  try {
+    const mr = await fetch('/api/priority/auto-match-cashnames', { method: 'POST' });
+    const matchData = await mr.json();
+    if (!mr.ok) throw new Error(matchData.error || mr.status);
+    addLine(`✓ זוהו ${matchData.matched} חשבונות מתוך ${matchData.matched + matchData.unmatched} (${matchData.cashBanksCount} קופות בפריוריטי)`, 'success');
+    if (matchData.unmatched > 0) {
+      const unmatched = matchData.results.filter(r => !r.matched);
+      unmatched.forEach(r => addLine(`  ⚠ לא זוהה: ${r.corporateName || r.maskedNumber}`, 'warn'));
+    }
+  } catch (e) {
+    addLine(`✗ שגיאה בזיהוי קופות: ${e.message}`, 'error');
     panel.classList.add('error');
     return;
   }
 
+  // Step 2: reload accounts after match update
+  const res = await fetch('/api/banks');
+  const { banks } = await res.json();
+  const withCashname = banks.flatMap(b => b.accounts.filter(a => a.is_active && a.priority_cashname));
+
+  if (!withCashname.length) {
+    addLine('לא נמצאו חשבונות תואמים — בדוק שמספרי הסניף והחשבון קיימים בפריוריטי', 'error');
+    panel.classList.add('error');
+    return;
+  }
+
+  // Step 3: check & preview per account
+  addLine(`── בודק ${withCashname.length} חשבונות ──`);
   let totalMissing = 0, totalMatched = 0, totalErrors = 0;
 
   for (const acc of withCashname) {
-    const label = `${acc.corporate_name || acc.masked_number} (${acc.priority_cashname})`;
-    addLine(`בודק ${label}…`);
+    const label = `${acc.corporate_name || acc.masked_number} [${acc.priority_cashname}]`;
     try {
       const r = await fetch(`/api/accounts/${acc.id}/push-to-priority`, { method: 'POST' });
       const data = await r.json();
@@ -586,7 +599,7 @@ async function pushAllToPriority() {
       if (data.missing === 0) {
         addLine(`✓ ${label}: כל ${data.matched} תנועות כבר בפריוריטי`, 'success');
       } else {
-        addLine(`⚠ ${label}: ${data.matched} בפריוריטי · ${data.missing} חסרות (בדיקה בלבד, לא קלטנו)`, 'warn');
+        addLine(`⚠ ${label}: ${data.matched} בפריוריטי · ${data.missing} חסרות`, 'warn');
       }
     } catch (e) {
       addLine(`✗ ${label}: ${e.message}`, 'error');
@@ -594,7 +607,7 @@ async function pushAllToPriority() {
     }
   }
 
-  panel.classList.add('done');
+  if (!totalErrors) panel.classList.add('done');
   document.getElementById('sum-new').textContent = totalMissing;
   document.getElementById('sum-dup').textContent = totalMatched;
   document.getElementById('sum-accounts').textContent = withCashname.length;
@@ -602,8 +615,12 @@ async function pushAllToPriority() {
   document.getElementById('sum-new').closest('.m').querySelector('.lbl').textContent = 'חסרות בפריוריטי';
   document.getElementById('sum-dup').closest('.m').querySelector('.lbl').textContent = 'כבר בפריוריטי';
   addLine(
-    totalErrors ? `סיום עם ${totalErrors} שגיאות` : `סיום — ${totalMissing} תנועות חסרות, ${totalMatched} קיימות`,
-    totalErrors ? 'error' : 'success',
+    totalErrors
+      ? `סיום עם ${totalErrors} שגיאות`
+      : totalMissing === 0
+        ? `✓ כל התנועות קיימות בפריוריטי`
+        : `סיום — ${totalMissing} תנועות חסרות, ${totalMatched} קיימות`,
+    totalErrors ? 'error' : totalMissing === 0 ? 'success' : 'warn',
   );
 }
 
@@ -724,25 +741,9 @@ async function renderAccountPage() {
     const balanceOk = transactions.filter(t => t._balance_check === 'ok').length;
     const balanceMismatch = transactions.filter(t => t._balance_check === 'mismatch').length;
 
-    const cashnameOptions = cashBanks.length
-      ? cashBanks.map(b =>
-          `<option value="${escapeHtml(b.CASHNAME)}" ${b.CASHNAME === account.priority_cashname ? 'selected' : ''}>`
-          + escapeHtml(b.CASHNAME) + (b.BANKNAME ? ' — ' + escapeHtml(b.BANKNAME) : '')
-          + '</option>',
-        ).join('')
-      : (account.priority_cashname
-          ? `<option value="${escapeHtml(account.priority_cashname)}" selected>${escapeHtml(account.priority_cashname)}</option>`
-          : '');
-
-    const cashnameControl = cashBanks.length
-      ? `<select id="cashname-select" class="cashname-select">
-           <option value="">בחר קופה...</option>
-           ${cashnameOptions}
-         </select>`
-      : `<input id="cashname-select" type="text" class="cashname-input"
-             placeholder="שם קופה בפריוריטי" value="${escapeHtml(account.priority_cashname || '')}">`;
-
-    const hasCashname = !!account.priority_cashname;
+    const cashnameTag = account.priority_cashname
+      ? `<code class="cashname-tag">${escapeHtml(account.priority_cashname)}</code>`
+      : `<span class="cashname-tag missing">לא זוהתה קופה — לחץ "קלוט" בדף הראשי</span>`;
 
     container.innerHTML = `
       <div class="priority-check-bar">
@@ -760,11 +761,10 @@ async function renderAccountPage() {
       </div>
       <div class="priority-push-bar">
         <span class="cashname-label">קופה בפריוריטי:</span>
-        ${cashnameControl}
-        <button class="btn btn-ghost btn-sm" id="save-cashname-btn">שמור</button>
+        ${cashnameTag}
         <div class="spacer"></div>
         <button class="btn btn-push btn-sm" id="push-priority-btn"
-          ${!hasCashname ? 'disabled title="יש להגדיר קופה תחילה"' : ''}>
+          ${!account.priority_cashname ? 'disabled title="לחץ קלוט בדף הראשי לזיהוי אוטומטי"' : ''}>
           ↑ קלוט בפריוריטי
         </button>
       </div>
@@ -791,7 +791,6 @@ async function renderAccountPage() {
     `;
 
     document.getElementById('check-priority-btn').addEventListener('click', runPriorityCheck);
-    document.getElementById('save-cashname-btn').addEventListener('click', () => savePriorityCashname(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
   } catch (e) {
     document.getElementById('txn-container').innerHTML =

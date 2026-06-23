@@ -116,14 +116,14 @@ export async function checkAgainstPriority(ourTxns) {
 
 /**
  * Fetch all CASHBANKS rows (cash journals / bank accounts configured in Priority).
- * Returns array of { CASHNAME, BANKNAME }.
+ * Returns array of { CASHNAME, BANKNAME, BRANCHNUM, ACCOUNTNUM, BANKNUM }.
  */
 export async function fetchCashBanks() {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
   const params = new URLSearchParams({
-    '$select': 'CASHNAME,BANKNAME',
+    '$select': 'CASHNAME,BANKNAME,BRANCHNUM,ACCOUNTNUM,BANKNUM',
     '$top': '200',
     '$orderby': 'CASHNAME',
   });
@@ -135,6 +135,46 @@ export async function fetchCashBanks() {
   }
   const data = await r.json();
   return data.value || [];
+}
+
+/**
+ * Auto-match a single bank account to a Priority CASHNAME.
+ *
+ * Matching logic (in priority order):
+ *  1. branch_id matches BRANCHNUM AND account number from masked_number matches ACCOUNTNUM
+ *  2. Account number from masked_number matches ACCOUNTNUM alone (if unique)
+ *
+ * account: { branch_id, masked_number }
+ * cashBanks: array from fetchCashBanks()
+ * Returns CASHNAME string or null if no match.
+ */
+export function matchCashnameToAccount(account, cashBanks) {
+  const strip = (s) => String(s || '').replace(/^0+/, '').replace(/\D/g, '');
+
+  const ourBranch = strip(account.branch_id);
+  // Extract digits from masked_number after the first separator
+  const maskedParts = (account.masked_number || '').split(/[-/]/);
+  const ourAccount = strip(maskedParts[1] || maskedParts[0] || '');
+
+  if (!ourAccount) return null;
+
+  // Pass 1: branch + account both match
+  for (const cb of cashBanks) {
+    const cbBranch = strip(cb.BRANCHNUM);
+    const cbAccount = strip(cb.ACCOUNTNUM);
+    if (!cbAccount) continue;
+    if (cbBranch === ourBranch && ourAccount.startsWith(cbAccount)) return cb.CASHNAME;
+    if (cbBranch === ourBranch && cbAccount.startsWith(ourAccount)) return cb.CASHNAME;
+  }
+
+  // Pass 2: account number alone (only if exactly one hit)
+  const byAccount = cashBanks.filter(cb => {
+    const cbAccount = strip(cb.ACCOUNTNUM);
+    return cbAccount.length >= 4 && (ourAccount.startsWith(cbAccount) || cbAccount.startsWith(ourAccount));
+  });
+  if (byAccount.length === 1) return byAccount[0].CASHNAME;
+
+  return null;
 }
 
 export { priorityConfigured };
