@@ -430,6 +430,107 @@ async function startSync(bankId, bankName, days = 30) {
   }
 }
 
+async function syncAllBanks() {
+  const res = await fetch('/api/banks');
+  const { banks } = await res.json();
+  if (!banks.length) return;
+
+  const panel = document.getElementById('sync-panel');
+  const logEl = document.getElementById('sync-log');
+  const title = document.getElementById('sync-title');
+  const summaryEl = document.getElementById('sync-summary');
+
+  panel.classList.remove('done', 'error');
+  panel.classList.add('open');
+  logEl.innerHTML = '';
+  summaryEl.style.display = 'none';
+  title.textContent = `סנכרון כל החשבונות (${banks.length} בנקים)`;
+  document.getElementById('sync-close').onclick = () => panel.classList.remove('open');
+
+  const addLine = (text, cls = '') => {
+    const div = document.createElement('div');
+    div.className = 'line ' + cls;
+    div.textContent = '› ' + text;
+    logEl.appendChild(div);
+    logEl.scrollTop = logEl.scrollHeight;
+  };
+
+  let totalNew = 0, totalDup = 0, totalAccounts = 0;
+
+  for (const bank of banks) {
+    const days = Number(localStorage.getItem(`sync-days:${bank.id}`)) || 30;
+    addLine(`── ${bank.name_he} (${days} ימים) ──`);
+
+    try {
+      const syncRes = await fetch(`/api/banks/${bank.id}/sync?days=${days}`, { method: 'POST' });
+      if (!syncRes.ok || !syncRes.body) throw new Error(`HTTP ${syncRes.status}`);
+      const reader = syncRes.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          const eventLine = block.split('\n').find(l => l.startsWith('event:'));
+          const dataLine = block.split('\n').find(l => l.startsWith('data:'));
+          if (!eventLine || !dataLine) continue;
+          const event = eventLine.slice(6).trim();
+          const data = JSON.parse(dataLine.slice(5).trim());
+
+          if (event === 'progress') {
+            addLine(data.message || data.step);
+          } else if (event === 'sms-required') {
+            addLine('🔐 הבנק שלח SMS — ממתין לקוד…');
+            try {
+              const code = await promptSmsCode(data.message);
+              const r = await fetch(`/api/sync/${data.syncId}/sms-code`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ code }),
+              });
+              if (!r.ok) {
+                const e = await r.json().catch(() => ({}));
+                addLine('שגיאה בשליחת קוד: ' + (e.error || r.status), 'error');
+              } else {
+                addLine('קוד SMS נשלח, ממתין לאישור הבנק…', 'success');
+              }
+            } catch {
+              addLine('הקוד בוטל', 'error');
+            }
+          } else if (event === 'account-saved') {
+            const dupNote = data.dedupSkipped > 0 ? ` (${data.dedupSkipped} כפילויות דולגו)` : '';
+            addLine(`✓ ${data.corporateName} (${data.maskedNumber}): ${data.newSaved} תנועות חדשות${dupNote}`, 'success');
+          } else if (event === 'done') {
+            totalNew += data.totalNewSaved || 0;
+            totalDup += data.totalDedupSkipped || 0;
+            totalAccounts += data.accountsCount || 0;
+          } else if (event === 'error') {
+            addLine(`שגיאה: ${data.message}`, 'error');
+            panel.classList.add('error');
+          }
+        }
+      }
+    } catch (e) {
+      addLine(`שגיאה ב-${bank.name_he}: ${e.message}`, 'error');
+      panel.classList.add('error');
+    }
+  }
+
+  if (!panel.classList.contains('error')) panel.classList.add('done');
+  document.getElementById('sum-new').textContent = totalNew;
+  document.getElementById('sum-dup').textContent = totalDup;
+  document.getElementById('sum-accounts').textContent = totalAccounts;
+  summaryEl.style.display = 'grid';
+  addLine(`סיום: ${totalNew} תנועות חדשות ב-${totalAccounts} חשבונות`, 'success');
+  setTimeout(() => renderIndex(), 800);
+}
+
 /* ───────── account page ───────── */
 async function renderAccountPage() {
   const id = new URLSearchParams(location.search).get('id');
