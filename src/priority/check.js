@@ -115,27 +115,33 @@ export async function checkAgainstPriority(ourTxns) {
 }
 
 /**
- * Fetch all CASHBANKS rows (cash journals / bank accounts configured in Priority).
- * Returns array of { CASHNAME, BANKNAME, BRANCHNUM, ACCOUNTNUM, BANKNUM }.
+ * Fetch distinct cash-journal → bank-account mappings from BANKPAGES.
+ * BANKPAGES is the exposed OData entity for Priority's CASH_BANKS screen.
+ * Returns deduplicated array of { CASHNAME, BANKNAME, BRANCH, PAYACCOUNT }.
  */
 export async function fetchCashBanks() {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
-  // Fetch all fields so we can see exactly what Priority returns for CASHBANKS.
-  // Once field names are confirmed, we can narrow with $select.
   const params = new URLSearchParams({
-    '$top': '200',
-    '$orderby': 'CASHNAME',
+    '$select': 'CASHNAME,BANKNAME,BRANCH,PAYACCOUNT',
+    '$top': '500',
   });
-  const url = `${PRIORITY_URL}/CASHBANKS?${params}`;
+  const url = `${PRIORITY_URL}/BANKPAGES?${params}`;
   const r = await fetch(url, { headers });
   if (!r.ok) {
     const text = await r.text().catch(() => '');
-    throw new Error(`Priority CASHBANKS query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+    throw new Error(`Priority BANKPAGES query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
   }
   const data = await r.json();
-  return data.value || [];
+  // Deduplicate — same cashname can appear once per bank statement page
+  const seen = new Set();
+  return (data.value || []).filter(row => {
+    const key = `${row.CASHNAME}|${row.BRANCH}|${row.PAYACCOUNT}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 /**
@@ -150,10 +156,10 @@ export async function fetchCashBanks() {
  * Returns CASHNAME string or null if no match.
  */
 export function matchCashnameToAccount(account, cashBanks) {
+  // cashBanks rows use BRANCH + PAYACCOUNT (from BANKPAGES entity)
   const strip = (s) => String(s || '').replace(/^0+/, '').replace(/\D/g, '');
 
   const ourBranch = strip(account.branch_id);
-  // Extract digits from masked_number after the first separator
   const maskedParts = (account.masked_number || '').split(/[-/]/);
   const ourAccount = strip(maskedParts[1] || maskedParts[0] || '');
 
@@ -161,8 +167,8 @@ export function matchCashnameToAccount(account, cashBanks) {
 
   // Pass 1: branch + account both match
   for (const cb of cashBanks) {
-    const cbBranch = strip(cb.BRANCHNUM);
-    const cbAccount = strip(cb.ACCOUNTNUM);
+    const cbBranch = strip(cb.BRANCH);
+    const cbAccount = strip(cb.PAYACCOUNT);
     if (!cbAccount) continue;
     if (cbBranch === ourBranch && ourAccount.startsWith(cbAccount)) return cb.CASHNAME;
     if (cbBranch === ourBranch && cbAccount.startsWith(ourAccount)) return cb.CASHNAME;
@@ -170,7 +176,7 @@ export function matchCashnameToAccount(account, cashBanks) {
 
   // Pass 2: account number alone (only if exactly one hit)
   const byAccount = cashBanks.filter(cb => {
-    const cbAccount = strip(cb.ACCOUNTNUM);
+    const cbAccount = strip(cb.PAYACCOUNT);
     return cbAccount.length >= 4 && (ourAccount.startsWith(cbAccount) || cbAccount.startsWith(ourAccount));
   });
   if (byAccount.length === 1) return byAccount[0].CASHNAME;
