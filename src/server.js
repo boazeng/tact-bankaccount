@@ -19,7 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush,
-  batchSetPriorityCashnames,
+  batchSetPriorityCashnames, markTransactionsPushed,
 } from './db.js';
 
 const FLOW_BALANCE_MAPPING = [
@@ -54,7 +54,7 @@ async function pushBalancesToFlow() {
   console.log('[flow-push] balances pushed:', payload);
 }
 import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount } from './priority/check.js';
-import { dryRunPush } from './priority/push.js';
+import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
   listStatus as listBankCredentialsStatus,
@@ -412,6 +412,7 @@ app.put('/api/accounts/:id/priority-cashname', requireRole('approver'), (req, re
 
 app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (req, res) => {
   const accountId = Number(req.params.id);
+  const isPreview = req.query.preview === 'true';
   const acc = getAccount(accountId);
   if (!acc) return res.status(404).json({ error: 'Account not found' });
   if (!priorityConfigured()) {
@@ -429,19 +430,45 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     // Step 2: collect transactions not found in Priority and not yet pushed
     const missing = getTransactionsForPush(accountId);
 
-    // Step 3: build dry-run payload (no actual POST to Priority)
-    const dry = dryRunPush(missing, acc.priority_cashname);
+    if (isPreview) {
+      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.priority_cashname) }));
+      return res.json({
+        ok: true,
+        dryRun: true,
+        accountId,
+        cashName: acc.priority_cashname,
+        checked: checkResult.ourTxnsChecked,
+        matched: checkResult.matched,
+        missing: missing.length,
+        preview: lines.slice(0, 50),
+        previewTotal: lines.length,
+        bankBalance: acc.last_balance,
+        dateRange: checkResult.dateRange,
+      });
+    }
+
+    // Step 3: push missing transactions to Priority
+    const { pushed, failed } = await pushToPriority(missing, acc.priority_cashname);
+    if (pushed.length > 0) markTransactionsPushed(pushed);
+
+    const pushedSet = new Set(pushed);
+    const pushedLines = missing
+      .filter(t => pushedSet.has(t.id))
+      .map(t => buildBankLinePayload(t, acc.priority_cashname));
 
     res.json({
       ok: true,
-      dryRun: true,
+      dryRun: false,
       accountId,
       cashName: acc.priority_cashname,
       checked: checkResult.ourTxnsChecked,
       matched: checkResult.matched,
-      missing: missing.length,
-      preview: dry.lines.slice(0, 50),
-      previewTotal: dry.lines.length,
+      pushed: pushed.length,
+      failed: failed.length,
+      missing: failed.length,
+      failedDetails: failed.slice(0, 10),
+      preview: pushedLines.slice(0, 50),
+      previewTotal: pushed.length,
       bankBalance: acc.last_balance,
       dateRange: checkResult.dateRange,
     });

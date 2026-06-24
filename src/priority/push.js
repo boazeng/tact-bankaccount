@@ -1,16 +1,14 @@
-// Priority push module — builds BANKLINESA payloads from our transaction records.
-//
-// DRY-RUN ONLY: this module prepares and validates what would be sent to Priority
-// but does NOT perform any HTTP POST. The actual write step will be added after
-// the payload fields are verified against a live Priority BANKLINESA endpoint.
-//
-// Expected BANKLINESA fields (to be confirmed):
-//   CASHNAME  – Priority cash journal name (e.g. "לאומי 1234")
-//   CURDATE   – ISO datetime string ("2024-01-15T00:00:00Z")
-//   DETAILS   – transaction description (max 250 chars)
-//   CREDIT    – positive amount if money IN, else 0
-//   DEBIT     – positive amount if money OUT, else 0
-//   REFERENCE – bank reference number (optional)
+const PRIORITY_URL = (process.env.PRIORITY_URL_REAL || '').replace(/\/$/, '');
+const PRIORITY_USERNAME = process.env.PRIORITY_USERNAME || '';
+const PRIORITY_PASSWORD = process.env.PRIORITY_PASSWORD || '';
+
+const authHeader = 'Basic ' + Buffer.from(`${PRIORITY_USERNAME}:${PRIORITY_PASSWORD}`).toString('base64');
+const postHeaders = {
+  authorization: authHeader,
+  accept: 'application/json',
+  'content-type': 'application/json',
+  'odata-version': '4.0',
+};
 
 /**
  * Maps a single local transaction to a Priority BANKLINESA payload object.
@@ -28,10 +26,33 @@ export function buildBankLinePayload(txn, cashName) {
 }
 
 /**
- * Dry-run: returns what would be sent to Priority without actually sending it.
+ * Push transactions to Priority's BANKLINESA entity via OData POST.
  * txns: [{ id, date, description, amount, reference_number }]
+ * Returns { pushed: [txnId, ...], failed: [{ id, error }, ...] }
  */
-export function dryRunPush(txns, cashName) {
-  const lines = txns.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, cashName) }));
-  return { dryRun: true, cashName, count: lines.length, lines };
+export async function pushToPriority(txns, cashName) {
+  const url = `${PRIORITY_URL}/BANKLINESA`;
+  const pushed = [];
+  const failed = [];
+
+  for (const txn of txns) {
+    const payload = buildBankLinePayload(txn, cashName);
+    try {
+      const r = await fetch(url, {
+        method: 'POST',
+        headers: postHeaders,
+        body: JSON.stringify(payload),
+      });
+      if (!r.ok) {
+        const text = await r.text().catch(() => '');
+        failed.push({ id: txn.id, error: `HTTP ${r.status}: ${text.slice(0, 200)}` });
+      } else {
+        pushed.push(txn.id);
+      }
+    } catch (e) {
+      failed.push({ id: txn.id, error: e.message });
+    }
+  }
+
+  return { pushed, failed };
 }

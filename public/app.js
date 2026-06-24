@@ -580,9 +580,9 @@ async function pushAllToPriority() {
     return;
   }
 
-  // Step 3: check & preview per account
-  addLine(`── בודק ${withCashname.length} חשבונות ──`);
-  let totalMissing = 0, totalMatched = 0, totalErrors = 0;
+  // Step 3: push per account
+  addLine(`── קולט ${withCashname.length} חשבונות לפריוריטי ──`);
+  let totalPushed = 0, totalMatched = 0, totalFailed = 0, totalErrors = 0;
 
   for (const acc of withCashname) {
     const label = `${acc.corporate_name || acc.masked_number} [${acc.priority_cashname}]`;
@@ -595,11 +595,14 @@ async function pushAllToPriority() {
         continue;
       }
       totalMatched += data.matched || 0;
-      totalMissing += data.missing || 0;
-      if (data.missing === 0) {
+      totalPushed += data.pushed || 0;
+      totalFailed += data.failed || 0;
+      if (data.pushed === 0 && data.failed === 0) {
         addLine(`✓ ${label}: כל ${data.matched} תנועות כבר בפריוריטי`, 'success');
+      } else if (data.failed === 0) {
+        addLine(`✓ ${label}: ${data.pushed} נקלטו (${data.matched} כבר היו)`, 'success');
       } else {
-        addLine(`⚠ ${label}: ${data.matched} בפריוריטי · ${data.missing} חסרות`, 'warn');
+        addLine(`⚠ ${label}: ${data.pushed} נקלטו · ${data.failed} נכשלו`, 'warn');
       }
     } catch (e) {
       addLine(`✗ ${label}: ${e.message}`, 'error');
@@ -607,20 +610,22 @@ async function pushAllToPriority() {
     }
   }
 
-  if (!totalErrors) panel.classList.add('done');
-  document.getElementById('sum-new').textContent = totalMissing;
+  if (!totalErrors && !totalFailed) panel.classList.add('done');
+  document.getElementById('sum-new').textContent = totalPushed;
   document.getElementById('sum-dup').textContent = totalMatched;
   document.getElementById('sum-accounts').textContent = withCashname.length;
   summaryEl.style.display = 'grid';
-  document.getElementById('sum-new').closest('.m').querySelector('.lbl').textContent = 'חסרות בפריוריטי';
+  document.getElementById('sum-new').closest('.m').querySelector('.lbl').textContent = 'נקלטו עכשיו';
   document.getElementById('sum-dup').closest('.m').querySelector('.lbl').textContent = 'כבר בפריוריטי';
   addLine(
     totalErrors
       ? `סיום עם ${totalErrors} שגיאות`
-      : totalMissing === 0
+      : totalPushed === 0 && totalFailed === 0
         ? `✓ כל התנועות קיימות בפריוריטי`
-        : `סיום — ${totalMissing} תנועות חסרות, ${totalMatched} קיימות`,
-    totalErrors ? 'error' : totalMissing === 0 ? 'success' : 'warn',
+        : totalFailed === 0
+          ? `✓ נקלטו ${totalPushed} תנועות (${totalMatched} כבר היו)`
+          : `סיום — ${totalPushed} נקלטו, ${totalFailed} נכשלו`,
+    totalErrors || totalFailed ? 'error' : 'success',
   );
 }
 
@@ -763,6 +768,10 @@ async function renderAccountPage() {
         <span class="cashname-label">קופה בפריוריטי:</span>
         ${cashnameTag}
         <div class="spacer"></div>
+        <button class="btn btn-ghost btn-sm" id="preview-priority-btn"
+          ${!account.priority_cashname ? 'disabled' : ''}>
+          👁 תצוגה מקדימה
+        </button>
         <button class="btn btn-push btn-sm" id="push-priority-btn"
           ${!account.priority_cashname ? 'disabled title="לחץ קלוט בדף הראשי לזיהוי אוטומטי"' : ''}>
           ↑ קלוט בפריוריטי
@@ -791,6 +800,7 @@ async function renderAccountPage() {
     `;
 
     document.getElementById('check-priority-btn').addEventListener('click', runPriorityCheck);
+    document.getElementById('preview-priority-btn').addEventListener('click', () => runPriorityPreview(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
   } catch (e) {
     document.getElementById('txn-container').innerHTML =
@@ -887,12 +897,74 @@ async function savePriorityCashname(id) {
   }
 }
 
+async function runPriorityPreview(id) {
+  const btn = document.getElementById('preview-priority-btn');
+  const resultEl = document.getElementById('priority-push-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ טוען...';
+  resultEl.innerHTML = '';
+
+  try {
+    const r = await fetch(`/api/accounts/${id}/push-to-priority?preview=true`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) { alert('שגיאה: ' + (data.error || r.status)); return; }
+
+    if (data.missing === 0) {
+      resultEl.innerHTML = `<div class="push-result-card push-all-ok">
+        ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
+      </div>`;
+      return;
+    }
+
+    const rows = (data.preview || []).map(line => {
+      const amount = line.CREDIT > 0 ? line.CREDIT : -line.DEBIT;
+      const amtCls = amount >= 0 ? 'pos' : 'neg';
+      return `<tr>
+        <td class="date">${fmtDate((line.CURDATE || '').slice(0, 10))}</td>
+        <td class="desc">${escapeHtml(line.DETAILS)}</td>
+        <td class="ref">${escapeHtml(line.REFERENCE || '')}</td>
+        <td class="num ${amtCls}">${fmtMoney(amount)}</td>
+      </tr>`;
+    }).join('');
+
+    const moreNote = data.previewTotal > (data.preview || []).length
+      ? `<div class="push-more-note">ועוד ${data.previewTotal - data.preview.length} תנועות נוספות...</div>`
+      : '';
+
+    resultEl.innerHTML = `<div class="push-result-card">
+      <div class="push-result-header">
+        <div class="push-stat"><span class="num green">${data.matched}</span> כבר בפריוריטי</div>
+        <div class="push-stat"><span class="num red">${data.missing}</span> ממתינות לקליטה</div>
+        <div class="push-stat">קופה: <code>${escapeHtml(data.cashName)}</code></div>
+        ${data.bankBalance != null ? `<div class="push-stat">יתרת בנק: <span class="num">${fmtMoney(data.bankBalance)}</span></div>` : ''}
+      </div>
+      <div class="push-preview-label">תנועות שיישלחו לפריוריטי (${data.previewTotal}):</div>
+      <div class="txn-table-wrap push-preview-table">
+        <table class="txn-table">
+          <thead><tr>
+            <th style="width:110px">תאריך</th><th>תיאור</th>
+            <th style="width:110px">אסמכתא</th><th style="width:120px;text-align:left;">סכום</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${moreNote}
+      <div class="push-dry-run-note">👁 תצוגה מקדימה בלבד — לחץ "קלוט בפריוריטי" לשליחה</div>
+    </div>`;
+  } catch (e) {
+    alert('שגיאה: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '👁 תצוגה מקדימה';
+  }
+}
+
 async function runPriorityPush(id) {
   const btn = document.getElementById('push-priority-btn');
   const resultEl = document.getElementById('priority-push-result');
   const origText = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '⏳ בודק...';
+  btn.textContent = '⏳ קולט...';
   resultEl.innerHTML = '';
 
   try {
@@ -919,20 +991,29 @@ async function runPriorityPush(id) {
       ? `<div class="push-more-note">ועוד ${data.previewTotal - data.preview.length} תנועות נוספות...</div>`
       : '';
 
-    resultEl.innerHTML = data.missing === 0
-      ? `<div class="push-result-card push-all-ok">
+    const failedList = (data.failedDetails || []).map(f =>
+      `<div class="push-fail-item">• תנועה ${f.id}: ${escapeHtml(f.error)}</div>`
+    ).join('');
+
+    if (data.pushed === 0 && data.failed === 0) {
+      resultEl.innerHTML = `<div class="push-result-card push-all-ok">
            ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
-         </div>`
-      : `<div class="push-result-card">
+         </div>`;
+    } else {
+      resultEl.innerHTML = `<div class="push-result-card">
            <div class="push-result-header">
              <div class="push-stat"><span class="num green">${data.matched}</span> כבר בפריוריטי</div>
-             <div class="push-stat"><span class="num red">${data.missing}</span> חסרות</div>
+             <div class="push-stat"><span class="num green">${data.pushed}</span> נקלטו עכשיו</div>
+             ${data.failed > 0
+               ? `<div class="push-stat"><span class="num red">${data.failed}</span> נכשלו</div>`
+               : ''}
              <div class="push-stat">קופה: <code>${escapeHtml(data.cashName)}</code></div>
              ${data.bankBalance != null
                ? `<div class="push-stat">יתרת בנק: <span class="num">${fmtMoney(data.bankBalance)}</span></div>`
                : ''}
            </div>
-           <div class="push-preview-label">תנועות שיקלטו (${data.previewTotal}):</div>
+           ${data.previewTotal > 0 ? `
+           <div class="push-preview-label">תנועות שנקלטו (${data.previewTotal}):</div>
            <div class="txn-table-wrap push-preview-table">
              <table class="txn-table">
                <thead>
@@ -946,10 +1027,8 @@ async function runPriorityPush(id) {
                <tbody>${previewRows}</tbody>
              </table>
            </div>
-           ${moreNote}
-           <div class="push-dry-run-note">
-             ⚠ מצב בדיקה בלבד — לא נשלח לפריוריטי
-           </div>
+           ${moreNote}` : ''}
+           ${failedList ? `<div class="push-preview-label">שגיאות:</div><div class="push-fail-list">${failedList}</div>` : ''}
          </div>`;
 
     btn.textContent = origText;
