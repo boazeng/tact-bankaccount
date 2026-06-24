@@ -1030,6 +1030,7 @@ async function runPriorityPush(id) {
            ${moreNote}` : ''}
            ${failedList ? `<div class="push-preview-label">שגיאות:</div><div class="push-fail-list">${failedList}</div>` : ''}
          </div>`;
+    }
 
     btn.textContent = origText;
   } catch (e) {
