@@ -160,28 +160,29 @@ export function matchCashnameToAccount(account, cashBanks) {
   const maskedParts = (account.masked_number || '').split(/[-/]/);
   const ourAccount = strip(maskedParts[1] || maskedParts[0] || '');
 
-  if (!ourAccount || ourAccount.length < 4) return null;
+  if (!ourAccount || ourAccount.length < 2) return null;
 
   // Extract all digit-sequences from CASHDES for comparison
   const getDigitGroups = (des) => (des || '').match(/\d+/g) || [];
 
-  // Pass 1: CASHDES contains both our branch digits AND our account digits
+  // Pass 1: branch + account both found in CASHDES (branch guard allows short account numbers)
   for (const cb of cashBanks) {
     const groups = getDigitGroups(cb.CASHDES);
     const hasBranch = ourBranch && groups.some(g => strip(g) === ourBranch);
     const hasAccount = groups.some(g => {
       const sg = strip(g);
-      return sg.length >= 4 && (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
+      return sg.length >= 2 && (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
     });
     if (hasBranch && hasAccount) return cb.CASHNAME;
   }
 
-  // Pass 2: account number alone (only if exactly one match)
+  // Pass 2: account number alone — keep min length 4 to avoid false positives without branch guard
   const byAccount = cashBanks.filter(cb => {
     const groups = getDigitGroups(cb.CASHDES);
     return groups.some(g => {
       const sg = strip(g);
-      return sg.length >= 4 && (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
+      return sg.length >= 4 && ourAccount.length >= 4 &&
+             (ourAccount.startsWith(sg) || sg.startsWith(ourAccount));
     });
   });
   if (byAccount.length === 1) return byAccount[0].CASHNAME;
