@@ -907,7 +907,10 @@ async function runPriorityPreview(id) {
   try {
     const r = await fetch(`/api/accounts/${id}/push-to-priority?preview=true`, { method: 'POST' });
     const data = await r.json();
-    if (!r.ok) { alert('שגיאה: ' + (data.error || r.status)); return; }
+    if (!r.ok) {
+      resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(data.error || String(r.status))}</div>`;
+      return;
+    }
 
     if (data.missing === 0) {
       resultEl.innerHTML = `<div class="push-result-card push-all-ok">
@@ -952,7 +955,7 @@ async function runPriorityPreview(id) {
       <div class="push-dry-run-note">👁 תצוגה מקדימה בלבד — לחץ "קלוט בפריוריטי" לשליחה</div>
     </div>`;
   } catch (e) {
-    alert('שגיאה: ' + e.message);
+    resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(e.message)}</div>`;
   } finally {
     btn.disabled = false;
     btn.textContent = '👁 תצוגה מקדימה';
