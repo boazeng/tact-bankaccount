@@ -746,9 +746,24 @@ async function renderAccountPage() {
     const balanceOk = transactions.filter(t => t._balance_check === 'ok').length;
     const balanceMismatch = transactions.filter(t => t._balance_check === 'mismatch').length;
 
-    const cashnameTag = account.priority_cashname
+    const cashnameOptions = cashBanks.map(cb =>
+      `<option value="${escapeHtml(cb.CASHNAME)}"
+         ${account.priority_cashname === cb.CASHNAME ? 'selected' : ''}>
+        ${escapeHtml(cb.CASHNAME)}${cb.CASHDES ? ' — ' + escapeHtml(cb.CASHDES) : ''}
+       </option>`
+    ).join('');
+
+    const cashnameControl = account.priority_cashname
       ? `<code class="cashname-tag">${escapeHtml(account.priority_cashname)}</code>`
-      : `<span class="cashname-tag missing">לא זוהתה קופה — לחץ "קלוט" בדף הראשי</span>`;
+      : (cashBanks.length
+          ? `<select id="cashname-select" class="cashname-select">
+               <option value="">בחר קופה...</option>
+               ${cashnameOptions}
+             </select>
+             <button class="btn btn-ghost btn-sm" id="save-cashname-btn">שמור</button>`
+          : `<input id="cashname-select" type="text" class="cashname-input"
+                 placeholder="שם קופה בפריוריטי" value="">
+             <button class="btn btn-ghost btn-sm" id="save-cashname-btn">שמור</button>`);
 
     container.innerHTML = `
       <div class="priority-check-bar">
@@ -766,7 +781,7 @@ async function renderAccountPage() {
       </div>
       <div class="priority-push-bar">
         <span class="cashname-label">קופה בפריוריטי:</span>
-        ${cashnameTag}
+        ${cashnameControl}
         <div class="spacer"></div>
         <button class="btn btn-ghost btn-sm" id="preview-priority-btn"
           ${!account.priority_cashname ? 'disabled' : ''}>
@@ -802,6 +817,7 @@ async function renderAccountPage() {
     document.getElementById('check-priority-btn').addEventListener('click', runPriorityCheck);
     document.getElementById('preview-priority-btn').addEventListener('click', () => runPriorityPreview(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
+    document.getElementById('save-cashname-btn')?.addEventListener('click', () => savePriorityCashname(id));
   } catch (e) {
     document.getElementById('txn-container').innerHTML =
       `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
@@ -889,6 +905,8 @@ async function savePriorityCashname(id) {
     }
     btn.textContent = '✓ נשמר';
     if (pushBtn) pushBtn.disabled = !cashname;
+    const previewBtn = document.getElementById('preview-priority-btn');
+    if (previewBtn) previewBtn.disabled = !cashname;
     setTimeout(() => { btn.textContent = 'שמור'; btn.disabled = false; }, 2000);
   } catch (e) {
     alert('שגיאה: ' + e.message);
