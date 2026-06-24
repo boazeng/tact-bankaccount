@@ -916,6 +916,7 @@ async function runPriorityPreview(id) {
       resultEl.innerHTML = `<div class="push-result-card push-all-ok">
         ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
       </div>`;
+      resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       return;
     }
 
@@ -954,8 +955,10 @@ async function runPriorityPreview(id) {
       ${moreNote}
       <div class="push-dry-run-note">👁 תצוגה מקדימה בלבד — לחץ "קלוט בפריוריטי" לשליחה</div>
     </div>`;
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } catch (e) {
     resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(e.message)}</div>`;
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   } finally {
     btn.disabled = false;
     btn.textContent = '👁 תצוגה מקדימה';
