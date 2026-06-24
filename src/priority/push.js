@@ -21,7 +21,6 @@ export function buildBankLinePayload(txn, cashName) {
     DETAILS: (txn.description || '').slice(0, 250),
     CREDIT: amount > 0 ? amount : 0,
     DEBIT: amount < 0 ? Math.abs(amount) : 0,
-    REFERENCE: txn.reference_number ? String(txn.reference_number).slice(0, 50) : '',
   };
 }
 
