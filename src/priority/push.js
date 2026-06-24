@@ -44,7 +44,9 @@ export async function pushToPriority(txns, cashName) {
       });
       if (!r.ok) {
         const text = await r.text().catch(() => '');
-        failed.push({ id: txn.id, error: `HTTP ${r.status}: ${text.slice(0, 200)}` });
+        let msg = text.slice(0, 400);
+        try { msg = JSON.parse(text)?.error?.message || msg; } catch {}
+        failed.push({ id: txn.id, error: `HTTP ${r.status}: ${msg.slice(0, 200)}` });
       } else {
         pushed.push(txn.id);
       }
