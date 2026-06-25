@@ -20,11 +20,11 @@ const postHeaders = {
 export function buildBankLinePayload(txn) {
   const amount = Number(txn.amount);
   const action = txn.description ?? '';
-  const rawDetails = [txn.extended_description, txn.beneficiary_name].filter(Boolean).join(' ');
-  const details = rawDetails.replace(/\d+/g, '').trim();
-  const combined = details
-    ? [details, action].filter(Boolean).join(' | ')
-    : action;
+  const cleanedExtended = (txn.extended_description ?? '').replace(/\d+/g, '').trim();
+  const identifier = txn.beneficiary_name || cleanedExtended || action;
+  const combined = (identifier && identifier !== action && action)
+    ? `${identifier} | ${action}`
+    : identifier || action;
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
     BTCODE: '00',
