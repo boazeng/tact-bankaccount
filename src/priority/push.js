@@ -21,6 +21,7 @@ export function buildBankLinePayload(txn) {
   const amount = Number(txn.amount);
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
+    BTCODE: '01',
     DETAILS: (txn.description || '').slice(0, 24),
     CREDIT: amount > 0 ? amount : 0,
     DEBIT: amount < 0 ? Math.abs(amount) : 0,
