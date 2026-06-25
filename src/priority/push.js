@@ -19,10 +19,12 @@ const postHeaders = {
  */
 export function buildBankLinePayload(txn) {
   const amount = Number(txn.amount);
-  const combined = [txn.description, txn.extended_description].filter(Boolean).join(' | ');
+  const combined = [txn.description, txn.extended_description, txn.beneficiary_name]
+    .filter(Boolean)
+    .join(' | ');
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
-    BTCODE: '01',
+    BTCODE: '00',
     DETAILS: combined.slice(0, 24),
     TRANSDESC: combined.slice(0, 80),
     CREDIT: amount > 0 ? amount : 0,
@@ -119,7 +121,12 @@ export async function pushToPriority(txns, cashName) {
         if (!r.ok) {
           const text = await r.text().catch(() => '');
           let msg = text.slice(0, 400);
-          try { msg = JSON.parse(text)?.error?.message || msg; } catch {}
+          try {
+            const parsed = JSON.parse(text);
+            msg = parsed?.error?.message
+              || parsed?.FORM?.InterfaceErrors?.text
+              || msg;
+          } catch {}
           failed.push({ id: txn.id, error: `HTTP ${r.status}: ${msg.slice(0, 200)}` });
         } else {
           pushed.push(txn.id);

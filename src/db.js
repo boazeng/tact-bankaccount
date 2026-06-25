@@ -248,7 +248,7 @@ const stmtUpsertAccount = db.prepare(`
 `);
 
 const stmtInsertTxn = db.prepare(`
-  INSERT OR IGNORE INTO transactions (
+  INSERT INTO transactions (
     account_id, bank_transaction_id, date, effective_date,
     description, extended_description, amount, running_balance,
     beneficiary_name, beneficiary_bank_code, beneficiary_branch, beneficiary_account,
@@ -259,6 +259,9 @@ const stmtInsertTxn = db.prepare(`
     @beneficiary_name, @beneficiary_bank_code, @beneficiary_branch, @beneficiary_account,
     @reference_number, @status, @raw_json
   )
+  ON CONFLICT(account_id, bank_transaction_id) DO UPDATE SET
+    extended_description = COALESCE(excluded.extended_description, extended_description),
+    raw_json = excluded.raw_json
 `);
 
 const stmtUpdateLastSync = db.prepare(`
@@ -455,7 +458,7 @@ export function batchSetPriorityCashnames(updates) {
 
 export function getTransactionsForPush(accountId) {
   return db.prepare(`
-    SELECT id, date, description, extended_description, amount, reference_number
+    SELECT id, date, description, extended_description, beneficiary_name, amount, reference_number
     FROM transactions
     WHERE account_id = ?
       AND in_priority = 0
