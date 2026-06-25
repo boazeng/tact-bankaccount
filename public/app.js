@@ -645,6 +645,18 @@ async function renderAccountPage() {
     const { account, transactions } = await txnRes.json();
     const cashBanks = (cashBanksRes?.ok ? (await cashBanksRes.json().catch(() => ({}))).banks : null) || [];
 
+    // Auto-discover cashname if not set yet
+    if (!account.priority_cashname && cashBanks.length) {
+      try {
+        const matchRes = await fetch('/api/priority/auto-match-cashnames', { method: 'POST' });
+        if (matchRes.ok) {
+          const matchData = await matchRes.json();
+          const hit = matchData.results?.find(r => r.accountId === account.id && r.matched);
+          if (hit) account.priority_cashname = hit.cashname;
+        }
+      } catch {}
+    }
+
     document.title = `TACT · ${account.corporate_name || account.masked_number}`;
 
     const balCls = account.last_balance < 0 ? 'neg' : '';

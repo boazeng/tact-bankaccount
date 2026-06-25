@@ -147,17 +147,15 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
 }
 
 /**
- * Fetch all bank-account cash-journals from Priority's CASH entity.
- * CASH is the OData entity for the CASH_BANKS screen.
- * Filters to CASHTYPEDES = 'חשבון בנק' and returns { CASHNAME, CASHDES }.
- * CASHDES contains the branch-account pattern, e.g. "בנק פועלים 610-681453 יעל ישראל".
+ * Fetch all bank-account cash-journals from Priority's CASH entity (CASH_BANKS screen).
+ * Filters to CASHTYPEDES = 'חשבון בנק'. Returns all fields so structured bank fields
+ * (BANKNO, BRANCHNO, BANKACCOUNTNO) are available for direct matching when present.
  */
 export async function fetchCashBanks() {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
   const params = new URLSearchParams({
-    '$select': 'CASHNAME,CASHDES,CASHTYPEDES',
     '$filter': "CASHTYPEDES eq 'חשבון בנק'",
     '$top': '500',
   });
@@ -174,12 +172,10 @@ export async function fetchCashBanks() {
 /**
  * Auto-match a single bank account to a Priority CASHNAME.
  *
- * Uses Priority's CASH entity (CASHDES field contains "branch-account" pattern).
- * Example CASHDES: "בנק פועלים 610-681453 יעל ישראל"
- *
- * Matching logic:
- *  Pass 1: branch + account both found in CASHDES
- *  Pass 2: account number alone (only if exactly one hit among bank-type entries)
+ * Matching logic (in priority order):
+ *  Pass 0: structured fields BANKNO+BRANCHNO+BANKACCOUNTNO (exact, if Priority returns them)
+ *  Pass 1: branch + account both found in CASHDES text
+ *  Pass 2: account number alone in CASHDES (only if exactly one hit)
  *
  * account: { branch_id, masked_number }
  * cashBanks: array from fetchCashBanks()
@@ -194,10 +190,25 @@ export function matchCashnameToAccount(account, cashBanks) {
 
   if (!ourAccount || ourAccount.length < 2) return null;
 
-  // Extract all digit-sequences from CASHDES for comparison
-  const getDigitGroups = (des) => (des || '').match(/\d+/g) || [];
+  // Pass 0: structured bank fields — most reliable, no text parsing needed
+  // Priority field names: BANKNO (בנק), BRANCHNO (סניף), BANKACCOUNTNO (חשבון)
+  const hasStructured = cashBanks.some(cb => cb.BANKACCOUNTNO != null);
+  if (hasStructured) {
+    for (const cb of cashBanks) {
+      const cbAccount = strip(cb.BANKACCOUNTNO);
+      if (!cbAccount || cbAccount.length < 2) continue;
+      const accountMatch = ourAccount === cbAccount || ourAccount.startsWith(cbAccount) || cbAccount.startsWith(ourAccount);
+      if (!accountMatch) continue;
+      if (ourBranch) {
+        const cbBranch = strip(cb.BRANCHNO);
+        if (cbBranch && cbBranch !== ourBranch) continue;
+      }
+      return cb.CASHNAME;
+    }
+  }
 
   // Pass 1: branch + account both found in CASHDES (branch guard allows short account numbers)
+  const getDigitGroups = (des) => (des || '').match(/\d+/g) || [];
   for (const cb of cashBanks) {
     const groups = getDigitGroups(cb.CASHDES);
     const hasBranch = ourBranch && groups.some(g => strip(g) === ourBranch);

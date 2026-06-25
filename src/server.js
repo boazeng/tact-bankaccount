@@ -363,7 +363,8 @@ app.delete('/api/bank-credentials/:bankId/:credId', requireRole('admin'), (req, 
 
 app.post('/api/accounts/:id/check-priority', requireRole('approver'), async (req, res) => {
   const accountId = Number(req.params.id);
-  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
   if (!priorityConfigured()) {
     return res.status(500).json({ error: 'Priority not configured in env (PRIORITY_URL_REAL/USERNAME/PASSWORD)' });
   }
@@ -478,7 +479,18 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     return res.status(500).json({ error: 'Priority not configured in env' });
   }
   if (!acc.priority_cashname) {
-    return res.status(400).json({ error: 'לא הוגדר שם קופה בפריוריטי לחשבון זה' });
+    // Try to auto-discover the cashname from Priority's CASH_BANKS before giving up
+    try {
+      const cashBanks = await fetchCashBanks();
+      const discovered = matchCashnameToAccount(acc, cashBanks);
+      if (discovered) {
+        setAccountPriorityCashname(accountId, discovered);
+        acc = { ...acc, priority_cashname: discovered };
+      }
+    } catch {}
+    if (!acc.priority_cashname) {
+      return res.status(400).json({ error: 'לא הוגדר שם קופה בפריוריטי לחשבון זה' });
+    }
   }
   try {
     // Step 1: check which transactions exist in Priority (updates in_priority column)
