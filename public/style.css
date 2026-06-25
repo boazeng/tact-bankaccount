@@ -683,3 +683,6 @@ footer .wrap {
   .txn-table td { display: block; padding: 3px 0; }
   .txn-table td.num { text-align: right; font-size: 1.05rem; padding: 6px 0; }
 }
+.btn-del-txn { background: none; border: none; cursor: pointer; opacity: 0; font-size: 0.85rem; padding: 2px 4px; border-radius: 4px; transition: opacity 0.15s; }
+tr:hover .btn-del-txn { opacity: 0.5; }
+.btn-del-txn:hover { opacity: 1 !important; background: var(--color-neg-soft, #fee2e2); }

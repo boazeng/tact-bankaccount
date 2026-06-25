@@ -19,7 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush,
-  batchSetPriorityCashnames, markTransactionsPushed,
+  batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
 
 const FLOW_BALANCE_MAPPING = [
@@ -538,6 +538,14 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
 });
 
 app.get('/', (req, res) => res.sendFile(path.resolve('public/index.html')));
+
+app.delete('/api/transactions/:id', requireRole('approver'), (req, res) => {
+  const id = Number(req.params.id);
+  if (!id) return res.status(400).json({ error: 'Invalid id' });
+  const changed = deleteTransaction(id);
+  if (!changed) return res.status(404).json({ error: 'Transaction not found' });
+  res.json({ ok: true });
+});
 
 app.listen(PORT, () => {
   console.log(`TACT BankAccount running at http://localhost:${PORT}`);

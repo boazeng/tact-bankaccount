@@ -805,6 +805,7 @@ async function renderAccountPage() {
               <th style="width: 130px; text-align: left;">יתרה</th>
               <th style="width: 60px; text-align: center;" title="בדיקת יתרה: ✓ = יתרה תואמת לחישוב מהתנועה הקודמת">בדיקה</th>
               <th style="width: 80px; text-align: center;">פריוריטי</th>
+              <th style="width: 40px;"></th>
             </tr>
           </thead>
           <tbody>
@@ -818,6 +819,15 @@ async function renderAccountPage() {
     document.getElementById('preview-priority-btn').addEventListener('click', () => runPriorityPreview(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
     document.getElementById('save-cashname-btn')?.addEventListener('click', () => savePriorityCashname(id));
+    document.querySelector('.txn-table')?.addEventListener('click', async (e) => {
+      const btn = e.target.closest('.btn-del-txn');
+      if (!btn) return;
+      const txnId = btn.dataset.id;
+      if (!confirm('למחוק תנועה זו לצמיתות?')) return;
+      const r = await fetch(`/api/transactions/${txnId}`, { method: 'DELETE' });
+      if (!r.ok) { alert('שגיאה במחיקה'); return; }
+      btn.closest('tr').remove();
+    });
   } catch (e) {
     document.getElementById('txn-container').innerHTML =
       `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
@@ -848,7 +858,7 @@ function renderTxnRow(t) {
     balanceHtml = `<span class="balance-box" title="חסרים נתונים לחישוב"></span>`;
   }
   return `
-    <tr>
+    <tr data-txn-id="${t.id}">
       <td class="date">${fmtDate(t.date)}</td>
       <td class="desc">${pending}<span class="main">${escapeHtml(t.description || '—')}</span>${extLine}</td>
       <td class="ben">${escapeHtml(t.beneficiary_name || '')}</td>
@@ -857,6 +867,7 @@ function renderTxnRow(t) {
       <td class="num">${fmtMoney(t.running_balance)}</td>
       <td style="text-align:center;">${balanceHtml}</td>
       <td style="text-align:center;">${priorityHtml}</td>
+      <td style="text-align:center;"><button class="btn-del-txn" data-id="${t.id}" title="מחק תנועה">🗑</button></td>
     </tr>
   `;
 }

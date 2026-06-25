@@ -501,4 +501,9 @@ export function markTransactionsPushed(ids) {
   tx(ids);
 }
 
+export function deleteTransaction(id) {
+  const r = db.prepare('DELETE FROM transactions WHERE id = ?').run(id);
+  return r.changes > 0;
+}
+
 export default db;
