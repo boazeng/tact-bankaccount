@@ -502,7 +502,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     const missing = getTransactionsForPush(accountId);
 
     if (isPreview) {
-      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t) }));
+      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.bank_id) }));
       return res.json({
         ok: true,
         dryRun: true,
@@ -519,13 +519,13 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     }
 
     // Step 3: push missing transactions to Priority
-    const { pushed, failed } = await pushToPriority(missing, acc.priority_cashname);
+    const { pushed, failed } = await pushToPriority(missing, acc.priority_cashname, acc.bank_id);
     if (pushed.length > 0) markTransactionsPushed(pushed);
 
     const pushedSet = new Set(pushed);
     const pushedLines = missing
       .filter(t => pushedSet.has(t.id))
-      .map(t => buildBankLinePayload(t));
+      .map(t => buildBankLinePayload(t, acc.bank_id));
 
     res.json({
       ok: true,

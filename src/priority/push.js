@@ -17,14 +17,21 @@ const postHeaders = {
  * Maps a single local transaction to a Priority BANKLINES payload object.
  * CASHNAME is NOT included here — it belongs to the parent BANKPAGES record.
  */
-export function buildBankLinePayload(txn) {
+export function buildBankLinePayload(txn, bankId) {
   const amount = Number(txn.amount);
-  const action = txn.description ?? '';
-  const cleanedExtended = (txn.extended_description ?? '').replace(/\d+/g, '').trim();
-  const identifier = txn.beneficiary_name || cleanedExtended || action;
-  const combined = (identifier && identifier !== action && action)
-    ? `${identifier} | ${action}`
-    : identifier || action;
+  let combined;
+  if (bankId === 'discount') {
+    combined = [txn.description, txn.extended_description, txn.beneficiary_name]
+      .filter(Boolean)
+      .join(' | ');
+  } else {
+    const action = txn.description ?? '';
+    const cleanedExtended = (txn.extended_description ?? '').replace(/\d+/g, '').trim();
+    const identifier = txn.beneficiary_name || cleanedExtended || action;
+    combined = (identifier && identifier !== action && action)
+      ? `${identifier} | ${action}`
+      : identifier || action;
+  }
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
     BTCODE: '00',
@@ -90,7 +97,7 @@ function bankPageNavPath(bp) {
  * txns: [{ id, date, description, amount, reference_number }]
  * Returns { pushed: [txnId, ...], failed: [{ id, error }, ...] }
  */
-export async function pushToPriority(txns, cashName) {
+export async function pushToPriority(txns, cashName, bankId) {
   const pushed = [];
   const failed = [];
 
@@ -114,7 +121,7 @@ export async function pushToPriority(txns, cashName) {
 
     const url = `${PRIORITY_URL}/${bankPageNavPath(bankPage)}`;
     for (const txn of dateTxns) {
-      const payload = buildBankLinePayload(txn);
+      const payload = buildBankLinePayload(txn, bankId);
       try {
         const r = await fetch(url, {
           method: 'POST',
