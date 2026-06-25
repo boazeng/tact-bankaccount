@@ -226,10 +226,13 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
           continue;
         }
 
-        const newHistory = insertTransactions(accountId, accResult.transactions.history, { status: 'completed' });
-        const newPending = insertTransactions(accountId, accResult.transactions.pending, { status: 'pending' });
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const historyToSave = accResult.transactions.history.filter(t => (t.date || '').slice(0, 10) < todayStr);
+        const pendingToSave = accResult.transactions.pending.filter(t => (t.date || '').slice(0, 10) < todayStr);
+        const newHistory = insertTransactions(accountId, historyToSave, { status: 'completed' });
+        const newPending = insertTransactions(accountId, pendingToSave, { status: 'pending' });
         const newCount = newHistory + newPending;
-        const fetched = accResult.transactions.history.length + accResult.transactions.pending.length;
+        const fetched = historyToSave.length + pendingToSave.length;
 
         updateLastSync(accountId, accResult.account.balance);
 
