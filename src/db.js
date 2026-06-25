@@ -429,12 +429,14 @@ export function getAccountBalances() {
 }
 
 export function getTransactionsForPriorityCheck(accountId) {
+  const today = new Date().toISOString().slice(0, 10);
   return db.prepare(`
     SELECT id, date, effective_date, amount
     FROM transactions
     WHERE account_id = ?
+      AND date < ?
     ORDER BY date
-  `).all(accountId);
+  `).all(accountId, today);
 }
 
 const stmtUpdatePriorityFound = db.prepare(`
@@ -480,14 +482,16 @@ export function batchSetPriorityCashnames(updates) {
 }
 
 export function getTransactionsForPush(accountId) {
+  const today = new Date().toISOString().slice(0, 10);
   return db.prepare(`
     SELECT id, date, description, extended_description, beneficiary_name, amount, reference_number
     FROM transactions
     WHERE account_id = ?
       AND in_priority = 0
       AND pushed_to_priority_at IS NULL
+      AND date < ?
     ORDER BY date, id
-  `).all(accountId);
+  `).all(accountId, today);
 }
 
 export function markTransactionsPushed(ids) {
