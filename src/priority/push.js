@@ -19,9 +19,11 @@ const postHeaders = {
  */
 export function buildBankLinePayload(txn) {
   const amount = Number(txn.amount);
-  const combined = [txn.description, txn.extended_description, txn.beneficiary_name]
-    .filter(Boolean)
-    .join(' | ');
+  const action = txn.description ?? '';
+  const details = [txn.extended_description, txn.beneficiary_name].filter(Boolean).join(' ');
+  const combined = (!details || /^\d+$/.test(details.trim()))
+    ? action
+    : [details, action].filter(Boolean).join(' | ');
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
     BTCODE: '00',
