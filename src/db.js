@@ -425,17 +425,28 @@ export function getTransactionsForPriorityCheck(accountId) {
   `).all(accountId);
 }
 
-const stmtUpdatePriority = db.prepare(`
+const stmtUpdatePriorityFound = db.prepare(`
   UPDATE transactions
-  SET in_priority = ?, priority_checked_at = ?, priority_bankpage = ?
+  SET in_priority = 1, priority_checked_at = ?, priority_bankpage = ?
+  WHERE id = ?
+`);
+const stmtUpdatePriorityNotFound = db.prepare(`
+  UPDATE transactions
+  SET in_priority = 0, priority_checked_at = ?, priority_bankpage = NULL,
+      pushed_to_priority_at = NULL
   WHERE id = ?
 `);
 export function updatePriorityStatus(updates) {
   // updates = [{ id, inPriority: 0|1, bankpage: string|null }]
+  // When not found: also reset pushed_to_priority_at so the transaction re-enters the push queue.
   const now = new Date().toISOString();
   const tx = db.transaction((items) => {
     for (const u of items) {
-      stmtUpdatePriority.run(u.inPriority ? 1 : 0, now, u.bankpage ?? null, u.id);
+      if (u.inPriority) {
+        stmtUpdatePriorityFound.run(now, u.bankpage ?? null, u.id);
+      } else {
+        stmtUpdatePriorityNotFound.run(now, u.id);
+      }
     }
   });
   tx(updates);
