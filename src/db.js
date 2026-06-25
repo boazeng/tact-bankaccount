@@ -430,7 +430,7 @@ export function getAccountBalances() {
 
 export function getTransactionsForPriorityCheck(accountId) {
   return db.prepare(`
-    SELECT id, date, amount
+    SELECT id, date, effective_date, amount
     FROM transactions
     WHERE account_id = ?
     ORDER BY date

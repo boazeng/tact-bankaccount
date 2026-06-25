@@ -73,9 +73,9 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
     return { ok: true, priorityLinesChecked: 0, ourTxnsChecked: 0, matched: 0, updates: [] };
   }
 
-  const dates = ourTxns.map(t => t.date).filter(Boolean).sort();
-  const fromDate = dates[0];
-  const toDate = dates[dates.length - 1];
+  const allDates = ourTxns.flatMap(t => [t.date, t.effective_date]).filter(Boolean).sort();
+  const fromDate = allDates[0];
+  const toDate = allDates[allDates.length - 1];
 
   const priorityLines = await fetchPriorityLines(fromDate, toDate, cashName);
 
@@ -97,9 +97,11 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       }
     }
     for (const txn of ourTxns) {
-      if (priorityDates.has(txn.date)) {
+      // Prefer effective_date (תאריך ערך) — that's what bookkeepers enter in Priority
+      const checkDate = txn.effective_date || txn.date;
+      if (priorityDates.has(checkDate)) {
         matched++;
-        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(checkDate) || null });
       } else {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
       }
