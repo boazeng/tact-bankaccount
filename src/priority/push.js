@@ -19,10 +19,12 @@ const postHeaders = {
  */
 export function buildBankLinePayload(txn) {
   const amount = Number(txn.amount);
+  const combined = [txn.description, txn.extended_description].filter(Boolean).join(' | ');
   return {
     CURDATE: `${txn.date}T00:00:00Z`,
     BTCODE: '01',
-    DETAILS: (txn.description || '').slice(0, 24),
+    DETAILS: combined.slice(0, 24),
+    TRANSDESC: combined.slice(0, 80),
     CREDIT: amount > 0 ? amount : 0,
     DEBIT: amount < 0 ? Math.abs(amount) : 0,
     ...(txn.reference_number != null ? { REF: String(txn.reference_number).slice(0, 24) } : {}),

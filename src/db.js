@@ -455,7 +455,7 @@ export function batchSetPriorityCashnames(updates) {
 
 export function getTransactionsForPush(accountId) {
   return db.prepare(`
-    SELECT id, date, description, amount, reference_number
+    SELECT id, date, description, extended_description, amount, reference_number
     FROM transactions
     WHERE account_id = ?
       AND in_priority = 0
