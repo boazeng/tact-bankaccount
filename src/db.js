@@ -56,32 +56,68 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_txn_account_date ON transactions(account_id, date DESC);
   CREATE INDEX IF NOT EXISTS idx_accounts_bank ON accounts(bank_id);
 
-  -- Encrypted bank credentials. Each field stored as AES-256-GCM ciphertext;
-  -- decryption requires BANK_VAULT_KEY (env). UI/API NEVER returns decrypted
-  -- values — only the scraper decrypts in-memory at sync time.
+  -- Encrypted bank credentials. Multiple sets per bank supported (multi-account).
+  -- Each field stored as AES-256-GCM ciphertext; decryption requires BANK_VAULT_KEY.
+  -- UI/API NEVER returns decrypted values — only the scraper decrypts in-memory.
   CREATE TABLE IF NOT EXISTS bank_credentials (
-    bank_id      TEXT PRIMARY KEY,
-    username     TEXT,                          -- encrypted (or null = use env)
-    password     TEXT,                          -- encrypted
-    login_url    TEXT,                          -- encrypted
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id      TEXT NOT NULL,
+    label        TEXT NOT NULL DEFAULT 'ראשי',
+    username     TEXT,
+    password     TEXT,
+    login_url    TEXT,
     updated_at   TEXT,
     updated_by   TEXT,
     is_set       INTEGER NOT NULL DEFAULT 0
   );
+  CREATE UNIQUE INDEX IF NOT EXISTS uidx_creds_bank_label
+    ON bank_credentials(bank_id, label);
 
   CREATE TABLE IF NOT EXISTS bank_credentials_audit (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    bank_id      TEXT NOT NULL,
-    action       TEXT NOT NULL,                 -- 'set' | 'sync_read' | 'bootstrap'
-    actor        TEXT,                          -- email or 'system'
-    fields       TEXT,                          -- json array of changed field names (never values)
-    occurred_at  TEXT NOT NULL DEFAULT (datetime('now'))
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    bank_id       TEXT NOT NULL,
+    credential_id INTEGER,
+    action        TEXT NOT NULL,                -- 'set' | 'sync_read' | 'bootstrap' | 'delete'
+    actor         TEXT,                         -- email or 'system'
+    fields        TEXT,                         -- json array of changed field names (never values)
+    occurred_at   TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE INDEX IF NOT EXISTS idx_creds_audit_bank_time
     ON bank_credentials_audit(bank_id, occurred_at DESC);
 `);
 
 // ── migrations ───────────────────────────────────────────────────────────
+
+// bank_credentials: migrate from single-cred (bank_id PK) to multi-cred (id AUTOINCREMENT)
+const credCols = db.prepare(`PRAGMA table_info(bank_credentials)`).all().map(c => c.name);
+if (!credCols.includes('id')) {
+  db.exec(`
+    CREATE TABLE bank_credentials_v2 (
+      id         INTEGER PRIMARY KEY AUTOINCREMENT,
+      bank_id    TEXT NOT NULL,
+      label      TEXT NOT NULL DEFAULT 'ראשי',
+      username   TEXT,
+      password   TEXT,
+      login_url  TEXT,
+      updated_at TEXT,
+      updated_by TEXT,
+      is_set     INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT INTO bank_credentials_v2 (bank_id, label, username, password, login_url, updated_at, updated_by, is_set)
+      SELECT bank_id, 'ראשי', username, password, login_url, updated_at, updated_by, is_set
+      FROM bank_credentials;
+    DROP TABLE bank_credentials;
+    ALTER TABLE bank_credentials_v2 RENAME TO bank_credentials;
+    CREATE UNIQUE INDEX IF NOT EXISTS uidx_creds_bank_label ON bank_credentials(bank_id, label);
+  `);
+}
+
+// bank_credentials_audit: add credential_id column if missing
+const credAuditCols = db.prepare(`PRAGMA table_info(bank_credentials_audit)`).all().map(c => c.name);
+if (!credAuditCols.includes('credential_id')) {
+  db.exec(`ALTER TABLE bank_credentials_audit ADD COLUMN credential_id INTEGER`);
+}
+
 const accountCols = db.prepare(`PRAGMA table_info(accounts)`).all().map(c => c.name);
 if (!accountCols.includes('branch_id')) {
   db.exec(`ALTER TABLE accounts ADD COLUMN branch_id TEXT`);
@@ -154,6 +190,30 @@ if (hasOldPoalim) {
   console.log(`[db] poalim migration: deleted ${res.changes} old-format rows (re-sync needed to repopulate)`);
 }
 
+// Remove duplicate transactions that share reference_number + amount within 3 days.
+// Keeps the row with the later date (settled version); removes the earlier (immediate) one.
+{
+  const dups = db.prepare(`
+    SELECT t1.id AS keep_id, t2.id AS drop_id
+    FROM transactions t1
+    JOIN transactions t2
+      ON  t2.account_id      = t1.account_id
+      AND t2.reference_number = t1.reference_number
+      AND t2.amount           = t1.amount
+      AND t2.id              != t1.id
+      AND ABS(julianday(t2.date) - julianday(t1.date)) <= 3
+    WHERE t1.reference_number IS NOT NULL
+      AND t1.date >= t2.date
+  `).all();
+  if (dups.length) {
+    const dropIds = [...new Set(dups.map(d => d.drop_id))];
+    const del = db.prepare(`DELETE FROM transactions WHERE id = ?`);
+    const tx = db.transaction(ids => { for (const id of ids) del.run(id); });
+    tx(dropIds);
+    console.log(`[db] dedup: removed ${dropIds.length} duplicate reference-number transaction(s)`);
+  }
+}
+
 // Backfill branch_id for existing rows by parsing the prefix of masked_number
 // (works for all current banks: "855-11200/06", "157-252378948", "610-118686",
 // "461-550217"). Branch_name stays null until the next sync provides it.
@@ -224,10 +284,23 @@ export function upsertAccount({ bankId, accountIndex, maskedNumber, corporateNam
   return row.id;
 }
 
+const stmtFindDupByRef = db.prepare(`
+  SELECT id FROM transactions
+  WHERE account_id = ?
+    AND reference_number = ?
+    AND amount = ?
+    AND ABS(julianday(date) - julianday(?)) <= 3
+  LIMIT 1
+`);
+
 export function insertTransactions(accountId, txns, { status = 'completed' } = {}) {
   const insertMany = db.transaction((items) => {
     let newCount = 0;
     for (const t of items) {
+      const refNum = t.referenceNumber != null ? String(t.referenceNumber) : null;
+      const date = (t.date || '').slice(0, 10);
+      const amount = Number(t.amount ?? 0);
+      if (refNum && stmtFindDupByRef.get(accountId, refNum, amount, date)) continue;
       const res = stmtInsertTxn.run({
         account_id: accountId,
         bank_transaction_id: String(t.transactionID ?? t.id ?? ''),
