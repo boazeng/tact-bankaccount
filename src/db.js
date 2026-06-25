@@ -70,8 +70,6 @@ db.exec(`
     updated_by   TEXT,
     is_set       INTEGER NOT NULL DEFAULT 0
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS uidx_creds_bank_label
-    ON bank_credentials(bank_id, label);
 
   CREATE TABLE IF NOT EXISTS bank_credentials_audit (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,9 +106,11 @@ if (!credCols.includes('id')) {
       FROM bank_credentials;
     DROP TABLE bank_credentials;
     ALTER TABLE bank_credentials_v2 RENAME TO bank_credentials;
-    CREATE UNIQUE INDEX IF NOT EXISTS uidx_creds_bank_label ON bank_credentials(bank_id, label);
   `);
 }
+
+// Ensure the unique index exists (safe after migration — label column guaranteed present)
+db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS uidx_creds_bank_label ON bank_credentials(bank_id, label)`);
 
 // bank_credentials_audit: add credential_id column if missing
 const credAuditCols = db.prepare(`PRAGMA table_info(bank_credentials_audit)`).all().map(c => c.name);
