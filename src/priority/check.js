@@ -79,15 +79,27 @@ export async function checkAgainstPriority(ourTxns) {
   const priorityLines = await fetchPriorityLines(fromDate, toDate);
 
   // Build an index: "YYYY-MM-DD|amount.toFixed(2)" → array of priority lines
+  // Index each line under all three dates: CURDATE, day before, and day after,
+  // to absorb ±1-day differences between our posting date and the bookkeeper's entry date.
   const index = new Map();
+  const addToIndex = (dateStr, amount, line) => {
+    const key = `${dateStr}|${amount.toFixed(2)}`;
+    if (!index.has(key)) index.set(key, []);
+    index.get(key).push(line);
+  };
+  const shiftDate = (dateStr, days) => {
+    const d = new Date(dateStr + 'T12:00:00Z');
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  };
   for (const line of priorityLines) {
     const date = (line.CURDATE || '').slice(0, 10);
     const credit = Number(line.CREDIT || 0);
     const debit = Number(line.DEBIT || 0);
     const amount = credit > 0 ? credit : -Math.abs(debit);
-    const key = `${date}|${amount.toFixed(2)}`;
-    if (!index.has(key)) index.set(key, []);
-    index.get(key).push(line);
+    addToIndex(date, amount, line);
+    addToIndex(shiftDate(date, -1), amount, line);
+    addToIndex(shiftDate(date, +1), amount, line);
   }
 
   const updates = [];
