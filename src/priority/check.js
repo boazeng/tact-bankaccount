@@ -26,15 +26,16 @@ function priorityConfigured() {
 }
 
 /**
- * Fetch all BANKLINESA rows in [fromDate, toDate] (ISO YYYY-MM-DD strings).
- * Returns array of { CURDATE, CREDIT, DEBIT, DETAILS, CASHNAME, BANKPAGE, KLINE }.
+ * Fetch all BANKLINESA rows in [fromDate, toDate] for a specific cashName.
+ * Returns array of { CURDATE, CREDIT, DEBIT, CASHNAME, BANKPAGE, KLINE }.
  */
-async function fetchPriorityLines(fromDate, toDate) {
-  const filter = `CURDATE ge ${fromDate}T00:00:00Z and CURDATE le ${toDate}T23:59:59Z`;
+async function fetchPriorityLines(fromDate, toDate, cashName = null) {
+  let filter = `CURDATE ge ${fromDate}T00:00:00Z and CURDATE le ${toDate}T23:59:59Z`;
+  if (cashName) filter += ` and CASHNAME eq '${cashName}'`;
   const params = new URLSearchParams({
     '$filter': filter,
-    '$select': 'CASHNAME,CURDATE,DETAILS,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM',
-    '$top': '2000',
+    '$select': 'CASHNAME,CURDATE,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM',
+    '$top': '5000',
   });
   const url = `${PRIORITY_URL}/BANKLINESA?${params}`;
   const r = await fetch(url, { headers });
@@ -46,25 +47,25 @@ async function fetchPriorityLines(fromDate, toDate) {
   return data.value || [];
 }
 
+const shiftDate = (dateStr, days) => {
+  const d = new Date(dateStr + 'T12:00:00Z');
+  d.setUTCDate(d.getUTCDate() + days);
+  return d.toISOString().slice(0, 10);
+};
+
 /**
  * Match our transactions against Priority's BANKLINESA.
  *
+ * When cashName is provided (preferred): uses day-level matching —
+ *   if Priority has ANY entry for that CASHNAME on a given date (±1 day),
+ *   all our transactions on that date are marked as in Priority.
+ *   This mirrors how bookkeepers work: they import full days, not individual lines.
+ *
+ * When cashName is null: falls back to date+amount matching (legacy).
+ *
  * ourTxns: [{ id, date: 'YYYY-MM-DD', amount: signed number }]
- *
- * Matching rule: same date AND same amount (after sign conversion).
- *   - Priority CREDIT > 0 → money in (positive amount)
- *   - Priority DEBIT > 0  → money out (negative amount)
- *
- * Returns:
- *   {
- *     ok: true,
- *     priorityLinesChecked: number,
- *     ourTxnsChecked: number,
- *     matched: number,
- *     updates: [{ id, inPriority: 0|1, bankpage: string|null }]
- *   }
  */
-export async function checkAgainstPriority(ourTxns) {
+export async function checkAgainstPriority(ourTxns, cashName = null) {
   if (!priorityConfigured()) {
     throw new Error('Priority not configured (missing PRIORITY_URL_REAL/USERNAME/PASSWORD in env)');
   }
@@ -76,43 +77,60 @@ export async function checkAgainstPriority(ourTxns) {
   const fromDate = dates[0];
   const toDate = dates[dates.length - 1];
 
-  const priorityLines = await fetchPriorityLines(fromDate, toDate);
-
-  // Build an index: "YYYY-MM-DD|amount.toFixed(2)" → array of priority lines
-  // Index each line under all three dates: CURDATE, day before, and day after,
-  // to absorb ±1-day differences between our posting date and the bookkeeper's entry date.
-  const index = new Map();
-  const addToIndex = (dateStr, amount, line) => {
-    const key = `${dateStr}|${amount.toFixed(2)}`;
-    if (!index.has(key)) index.set(key, []);
-    index.get(key).push(line);
-  };
-  const shiftDate = (dateStr, days) => {
-    const d = new Date(dateStr + 'T12:00:00Z');
-    d.setUTCDate(d.getUTCDate() + days);
-    return d.toISOString().slice(0, 10);
-  };
-  for (const line of priorityLines) {
-    const date = (line.CURDATE || '').slice(0, 10);
-    const credit = Number(line.CREDIT || 0);
-    const debit = Number(line.DEBIT || 0);
-    const amount = credit > 0 ? credit : -Math.abs(debit);
-    addToIndex(date, amount, line);
-    addToIndex(shiftDate(date, -1), amount, line);
-    addToIndex(shiftDate(date, +1), amount, line);
-  }
+  const priorityLines = await fetchPriorityLines(fromDate, toDate, cashName);
 
   const updates = [];
   let matched = 0;
-  for (const txn of ourTxns) {
-    const amount = Number(txn.amount);
-    const key = `${txn.date}|${amount.toFixed(2)}`;
-    const candidates = index.get(key) || [];
-    if (candidates.length > 0) {
-      matched++;
-      updates.push({ id: txn.id, inPriority: 1, bankpage: String(candidates[0].BANKPAGE || '') });
-    } else {
-      updates.push({ id: txn.id, inPriority: 0, bankpage: null });
+
+  if (cashName) {
+    // Day-level matching: build a Set of dates that exist in Priority for this account.
+    // Index each date and its ±1 neighbours to absorb posting-date vs value-date skew.
+    const priorityDates = new Set();
+    // Also keep a map from date → first BANKPAGE seen that day (for the bankpage field)
+    const dateToBankpage = new Map();
+    for (const line of priorityLines) {
+      const date = (line.CURDATE || '').slice(0, 10);
+      if (!date) continue;
+      for (const d of [shiftDate(date, -1), date, shiftDate(date, +1)]) {
+        priorityDates.add(d);
+        if (!dateToBankpage.has(d)) dateToBankpage.set(d, String(line.BANKPAGE || ''));
+      }
+    }
+    for (const txn of ourTxns) {
+      if (priorityDates.has(txn.date)) {
+        matched++;
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
+      } else {
+        updates.push({ id: txn.id, inPriority: 0, bankpage: null });
+      }
+    }
+  } else {
+    // Legacy: date + amount matching (no CASHNAME filter available)
+    const index = new Map();
+    const addToIndex = (dateStr, amount, line) => {
+      const key = `${dateStr}|${amount.toFixed(2)}`;
+      if (!index.has(key)) index.set(key, []);
+      index.get(key).push(line);
+    };
+    for (const line of priorityLines) {
+      const date = (line.CURDATE || '').slice(0, 10);
+      const credit = Number(line.CREDIT || 0);
+      const debit = Number(line.DEBIT || 0);
+      const amount = credit > 0 ? credit : -Math.abs(debit);
+      addToIndex(date, amount, line);
+      addToIndex(shiftDate(date, -1), amount, line);
+      addToIndex(shiftDate(date, +1), amount, line);
+    }
+    for (const txn of ourTxns) {
+      const amount = Number(txn.amount);
+      const key = `${txn.date}|${amount.toFixed(2)}`;
+      const candidates = index.get(key) || [];
+      if (candidates.length > 0) {
+        matched++;
+        updates.push({ id: txn.id, inPriority: 1, bankpage: String(candidates[0].BANKPAGE || '') });
+      } else {
+        updates.push({ id: txn.id, inPriority: 0, bankpage: null });
+      }
     }
   }
 

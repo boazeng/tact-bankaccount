@@ -369,7 +369,7 @@ app.post('/api/accounts/:id/check-priority', requireRole('approver'), async (req
   }
   try {
     const ourTxns = getTransactionsForPriorityCheck(accountId);
-    const result = await checkAgainstPriority(ourTxns);
+    const result = await checkAgainstPriority(ourTxns, acc.priority_cashname || null);
     updatePriorityStatus(result.updates);
     res.json({
       ok: true,
@@ -483,7 +483,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
   try {
     // Step 1: check which transactions exist in Priority (updates in_priority column)
     const allTxns = getTransactionsForPriorityCheck(accountId);
-    const checkResult = await checkAgainstPriority(allTxns);
+    const checkResult = await checkAgainstPriority(allTxns, acc.priority_cashname || null);
     updatePriorityStatus(checkResult.updates);
 
     // Step 2: collect transactions not found in Priority and not yet pushed
