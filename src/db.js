@@ -190,27 +190,34 @@ if (hasOldPoalim) {
   console.log(`[db] poalim migration: deleted ${res.changes} old-format rows (re-sync needed to repopulate)`);
 }
 
-// Remove duplicate transactions that share reference_number + amount within 3 days.
-// Keeps the row with the later date (settled version); removes the earlier (immediate) one.
+// Remove duplicate transactions: same account + same amount + dates within 3 days.
+// Targets "זיכוי מיידי" (Poalim instant credit) that appears once on transfer date
+// and again on settlement date with a different bank_transaction_id.
+// Keeps the row with the later date (settled); removes the earlier (immediate).
 {
   const dups = db.prepare(`
     SELECT t1.id AS keep_id, t2.id AS drop_id
     FROM transactions t1
     JOIN transactions t2
-      ON  t2.account_id      = t1.account_id
-      AND t2.reference_number = t1.reference_number
-      AND t2.amount           = t1.amount
-      AND t2.id              != t1.id
-      AND ABS(julianday(t2.date) - julianday(t1.date)) <= 3
-    WHERE t1.reference_number IS NOT NULL
-      AND t1.date >= t2.date
+      ON  t2.account_id = t1.account_id
+      AND t2.amount     = t1.amount
+      AND t2.id        != t1.id
+      AND t1.date      >  t2.date
+      AND ABS(julianday(t1.date) - julianday(t2.date)) <= 3
+    WHERE (
+      -- same reference_number (non-null)
+      (t1.reference_number IS NOT NULL AND t1.reference_number = t2.reference_number)
+      OR
+      -- same description (covers cases where reference_number is null)
+      (t1.description IS NOT NULL AND t1.description = t2.description)
+    )
   `).all();
   if (dups.length) {
     const dropIds = [...new Set(dups.map(d => d.drop_id))];
     const del = db.prepare(`DELETE FROM transactions WHERE id = ?`);
     const tx = db.transaction(ids => { for (const id of ids) del.run(id); });
     tx(dropIds);
-    console.log(`[db] dedup: removed ${dropIds.length} duplicate reference-number transaction(s)`);
+    console.log(`[db] dedup: removed ${dropIds.length} duplicate transaction(s) (same amount+description within 3 days)`);
   }
 }
 
@@ -290,9 +297,13 @@ export function upsertAccount({ bankId, accountIndex, maskedNumber, corporateNam
 const stmtFindDupByRef = db.prepare(`
   SELECT id FROM transactions
   WHERE account_id = ?
-    AND reference_number = ?
     AND amount = ?
     AND ABS(julianday(date) - julianday(?)) <= 3
+    AND (
+      (reference_number IS NOT NULL AND reference_number = ?)
+      OR
+      (description IS NOT NULL AND description = ?)
+    )
   LIMIT 1
 `);
 
@@ -301,9 +312,10 @@ export function insertTransactions(accountId, txns, { status = 'completed' } = {
     let newCount = 0;
     for (const t of items) {
       const refNum = t.referenceNumber != null ? String(t.referenceNumber) : null;
+      const desc = t.description ?? null;
       const date = (t.date || '').slice(0, 10);
       const amount = Number(t.amount ?? 0);
-      if (refNum && stmtFindDupByRef.get(accountId, refNum, amount, date)) continue;
+      if ((refNum || desc) && stmtFindDupByRef.get(accountId, amount, date, refNum, desc)) continue;
       const res = stmtInsertTxn.run({
         account_id: accountId,
         bank_transaction_id: String(t.transactionID ?? t.id ?? ''),
