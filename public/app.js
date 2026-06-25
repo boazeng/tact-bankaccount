@@ -1300,25 +1300,44 @@ async function renderBankCredentialsPage() {
       } else {
         warning.innerHTML = '';
       }
+
       container.innerHTML = banks.map(b => `
-        <div class="cred-row">
-          <div class="bank-info">
-            <div class="bank-name">${escapeHtml(b.name_he)}</div>
-            <div class="status-line">
-              ${b.is_set
-                ? `<span class="status-set">✓ הוגדר</span>`
-                : `<span class="status-unset">⚠ עוד לא הוגדר</span>`}
-            </div>
-            ${b.is_set && b.updated_by
-              ? `<div class="meta">עודכן ע"י ${escapeHtml(b.updated_by)} · ${fmtDateTime(b.updated_at)}</div>`
-              : ''}
+        <div class="bank-section">
+          <div class="bank-section-header">
+            <span class="bank-name">${escapeHtml(b.name_he)}</span>
+            ${b.credentials.length === 0 ? `<span class="no-creds">⚠ אין פרטי כניסה</span>` : ''}
+            <button class="btn btn-pri btn-sm" data-add-bank="${escapeHtml(b.id)}" data-bank-name="${escapeHtml(b.name_he)}" ${!vault_configured ? 'disabled' : ''}>+ הוסף</button>
           </div>
-          <button class="btn btn-pri btn-sm" data-edit-bank="${escapeHtml(b.id)}" data-bank-name="${escapeHtml(b.name_he)}" ${!vault_configured ? 'disabled' : ''}>ערוך</button>
+          ${b.credentials.map(c => `
+            <div class="cred-row">
+              <div class="cred-info">
+                <span class="cred-label">${escapeHtml(c.label)}</span>
+                <span class="status-set">✓ הוגדר</span>
+                ${c.updated_by ? `<span class="meta">עודכן ע"י ${escapeHtml(c.updated_by)} · ${fmtDateTime(c.updated_at)}</span>` : ''}
+              </div>
+              <div class="cred-actions">
+                <button class="btn btn-ghost btn-sm" data-edit-cred="${c.id}" data-bank-id="${escapeHtml(b.id)}" data-bank-name="${escapeHtml(b.name_he)}" data-cred-label="${escapeHtml(c.label)}" ${!vault_configured ? 'disabled' : ''}>ערוך</button>
+                <button class="btn btn-danger btn-sm" data-del-cred="${c.id}" data-bank-id="${escapeHtml(b.id)}" data-cred-label="${escapeHtml(c.label)}">מחק</button>
+              </div>
+            </div>
+          `).join('')}
         </div>
       `).join('');
 
-      container.querySelectorAll('[data-edit-bank]').forEach(btn => {
-        btn.addEventListener('click', () => openCredsModal(btn.dataset.editBank, btn.dataset.bankName));
+      container.querySelectorAll('[data-add-bank]').forEach(btn => {
+        btn.addEventListener('click', () => openCredsModal({ mode: 'add', bankId: btn.dataset.addBank, bankName: btn.dataset.bankName }));
+      });
+      container.querySelectorAll('[data-edit-cred]').forEach(btn => {
+        btn.addEventListener('click', () => openCredsModal({
+          mode: 'edit',
+          bankId: btn.dataset.bankId,
+          bankName: btn.dataset.bankName,
+          credId: btn.dataset.editCred,
+          currentLabel: btn.dataset.credLabel,
+        }));
+      });
+      container.querySelectorAll('[data-del-cred]').forEach(btn => {
+        btn.addEventListener('click', () => deleteCred(btn.dataset.bankId, btn.dataset.delCred, btn.dataset.credLabel));
       });
     } catch (e) {
       container.innerHTML = `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
@@ -1326,43 +1345,70 @@ async function renderBankCredentialsPage() {
   };
 
   const modal = document.getElementById('modal-bg');
+  const fLabel = document.getElementById('f-label');
   const fUser = document.getElementById('f-username');
   const fPass = document.getElementById('f-password');
   const fUrl = document.getElementById('f-loginurl');
   const errEl = document.getElementById('modal-err');
+  const hintEl = document.getElementById('modal-hint');
   const titleEl = document.getElementById('modal-title');
-  let currentBankId = null;
+  let modalState = null; // { mode, bankId, credId? }
 
-  function openCredsModal(bankId, bankName) {
-    currentBankId = bankId;
-    titleEl.textContent = `עריכת סיסמאות — ${bankName}`;
+  function openCredsModal({ mode, bankId, bankName, credId, currentLabel }) {
+    modalState = { mode, bankId, credId };
+    if (mode === 'add') {
+      titleEl.textContent = `הוספת פרטי כניסה — ${bankName}`;
+      hintEl.textContent = 'שם משתמש וסיסמה חובה. ניתן להוסיף מספר סטים לאותו בנק.';
+      fLabel.value = '';
+      fLabel.placeholder = 'ראשי';
+    } else {
+      titleEl.textContent = `עריכת פרטי כניסה — ${bankName} (${currentLabel})`;
+      hintEl.textContent = 'שדה ריק = הערך הקיים נשמר ללא שינוי.';
+      fLabel.value = '';
+      fLabel.placeholder = currentLabel || 'ראשי';
+    }
     fUser.value = ''; fPass.value = ''; fUrl.value = '';
+    fUser.placeholder = mode === 'add' ? '' : 'ללא שינוי';
+    fPass.placeholder = mode === 'add' ? '' : 'ללא שינוי';
+    fUrl.placeholder  = mode === 'add' ? '' : 'ללא שינוי';
     errEl.textContent = '';
     modal.classList.add('open');
-    setTimeout(() => fUser.focus(), 50);
+    setTimeout(() => fLabel.focus(), 50);
   }
-  const closeModal = () => { modal.classList.remove('open'); currentBankId = null; };
+  const closeModal = () => { modal.classList.remove('open'); modalState = null; };
 
   document.getElementById('cancel-btn').addEventListener('click', closeModal);
   modal.addEventListener('click', (e) => { if (e.target === modal) closeModal(); });
 
   document.getElementById('save-btn').addEventListener('click', async () => {
-    if (!currentBankId) return;
+    if (!modalState) return;
     errEl.textContent = '';
+    const { mode, bankId, credId } = modalState;
     const body = {
-      username: fUser.value.trim(),
-      password: fPass.value.trim(),
-      loginUrl: fUrl.value.trim(),
+      label:    fLabel.value.trim() || null,
+      username: fUser.value.trim()  || null,
+      password: fPass.value.trim()  || null,
+      loginUrl: fUrl.value.trim()   || null,
     };
-    if (!body.username && !body.password && !body.loginUrl) {
-      errEl.textContent = 'יש למלא לפחות שדה אחד';
-      return;
+
+    let r;
+    if (mode === 'add') {
+      r = await fetch(`/api/bank-credentials/${bankId}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } else {
+      if (!body.label && !body.username && !body.password && !body.loginUrl) {
+        errEl.textContent = 'יש למלא לפחות שדה אחד לשינוי';
+        return;
+      }
+      r = await fetch(`/api/bank-credentials/${bankId}/${credId}`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
     }
-    const r = await fetch(`/api/bank-credentials/${currentBankId}`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
     if (!r.ok) {
       const e = await r.json().catch(() => ({}));
       errEl.textContent = e.error || `HTTP ${r.status}`;
@@ -1371,6 +1417,17 @@ async function renderBankCredentialsPage() {
     closeModal();
     reload();
   });
+
+  async function deleteCred(bankId, credId, label) {
+    if (!confirm(`למחוק את פרטי הכניסה "${label}"?\nפעולה זו בלתי הפיכה.`)) return;
+    const r = await fetch(`/api/bank-credentials/${bankId}/${credId}`, { method: 'DELETE' });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      alert(e.error || `שגיאה HTTP ${r.status}`);
+      return;
+    }
+    reload();
+  }
 
   reload();
 }

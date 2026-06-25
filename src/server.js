@@ -58,8 +58,10 @@ import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
   listStatus as listBankCredentialsStatus,
-  setCredentials as setBankCredentials,
-  resolveCredentialsForBank,
+  addCredentials as addBankCredentials,
+  updateCredentials as updateBankCredentials,
+  deleteCredentials as deleteBankCredentials,
+  resolveAllCredentialsForBank,
   bootstrapFromEnvIfEmpty as bootstrapBankCredsFromEnv,
 } from './secrets/bank-creds.js';
 import { vaultConfigured } from './secrets/vault.js';
@@ -143,11 +145,17 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
 
-  const credentials = resolveCredentialsForBank(bankId, bankRegistry, req.user?.email || 'sync');
-  const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
-  if (missing.length) {
-    send('error', { message: `Missing credentials for ${bankId} (set them in /bank-credentials.html or env): ${missing.join(', ')}` });
+  const allCredentialSets = resolveAllCredentialsForBank(bankId, bankRegistry, req.user?.email || 'sync');
+  if (!allCredentialSets.length) {
+    send('error', { message: `אין פרטי כניסה מוגדרים ל-${bankId} — הגדר ב-/bank-credentials.html` });
     return res.end();
+  }
+  for (const { label, credentials } of allCredentialSets) {
+    const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
+    if (missing.length) {
+      send('error', { message: `חסרים פרטי כניסה עבור "${label}" (${bankId}): ${missing.join(', ')}` });
+      return res.end();
+    }
   }
 
   // SMS / interactive input bridge: scraper calls onSmsRequired, server emits
@@ -176,75 +184,83 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
     send('sync-started', { syncId, bankId, daysBack });
     send('progress', { step: 'start', message: `מתחיל סנכרון ${bank.info.nameHe} (${daysBack} ימים)` });
 
-    const result = await bank.scrape({
-      credentials,
-      daysBack,
-      onProgress: (p) => send('progress', p),
-      onSmsRequired,
-    });
-
     const inactiveSet = getInactiveMaskedNumbers(bankId);
-
     let totalNew = 0;
     let totalAll = 0;
     let skippedInactive = 0;
     const perAccount = [];
-    for (const accResult of result.accounts) {
-      const accountId = upsertAccount({
-        bankId,
-        accountIndex: accResult.account.accountIndex,
-        maskedNumber: accResult.account.maskedNumber,
-        corporateName: accResult.account.corporateName,
-        iban: accResult.account.iban,
-        balance: accResult.account.balance,
-        branchId: accResult.account.branchId,
-        branchName: accResult.account.branchName,
-      });
+    let lastResult = null;
 
-      if (inactiveSet.has(accResult.account.maskedNumber)) {
-        skippedInactive++;
-        send('account-skipped', {
-          maskedNumber: accResult.account.maskedNumber,
-          corporateName: accResult.account.corporateName,
-          reason: 'inactive',
-        });
-        continue;
+    for (const { label, credentials } of allCredentialSets) {
+      if (allCredentialSets.length > 1) {
+        send('progress', { step: 'credential', message: `מתחבר עם פרטי כניסה: "${label}"` });
       }
 
-      const newHistory = insertTransactions(accountId, accResult.transactions.history, { status: 'completed' });
-      const newPending = insertTransactions(accountId, accResult.transactions.pending, { status: 'pending' });
-      const newCount = newHistory + newPending;
-      const fetched = accResult.transactions.history.length + accResult.transactions.pending.length;
-
-      updateLastSync(accountId, accResult.account.balance);
-
-      totalNew += newCount;
-      totalAll += fetched;
-      perAccount.push({
-        accountId,
-        maskedNumber: accResult.account.maskedNumber,
-        corporateName: accResult.account.corporateName,
-        fetched,
-        newSaved: newCount,
-        dedupSkipped: fetched - newCount,
+      const result = await bank.scrape({
+        credentials,
+        daysBack,
+        onProgress: (p) => send('progress', p),
+        onSmsRequired,
       });
+      lastResult = result;
 
-      send('account-saved', {
-        maskedNumber: accResult.account.maskedNumber,
-        corporateName: accResult.account.corporateName,
-        fetched,
-        newSaved: newCount,
-        dedupSkipped: fetched - newCount,
-      });
+      for (const accResult of result.accounts) {
+        const accountId = upsertAccount({
+          bankId,
+          accountIndex: accResult.account.accountIndex,
+          maskedNumber: accResult.account.maskedNumber,
+          corporateName: accResult.account.corporateName,
+          iban: accResult.account.iban,
+          balance: accResult.account.balance,
+          branchId: accResult.account.branchId,
+          branchName: accResult.account.branchName,
+        });
+
+        if (inactiveSet.has(accResult.account.maskedNumber)) {
+          skippedInactive++;
+          send('account-skipped', {
+            maskedNumber: accResult.account.maskedNumber,
+            corporateName: accResult.account.corporateName,
+            reason: 'inactive',
+          });
+          continue;
+        }
+
+        const newHistory = insertTransactions(accountId, accResult.transactions.history, { status: 'completed' });
+        const newPending = insertTransactions(accountId, accResult.transactions.pending, { status: 'pending' });
+        const newCount = newHistory + newPending;
+        const fetched = accResult.transactions.history.length + accResult.transactions.pending.length;
+
+        updateLastSync(accountId, accResult.account.balance);
+
+        totalNew += newCount;
+        totalAll += fetched;
+        perAccount.push({
+          accountId,
+          maskedNumber: accResult.account.maskedNumber,
+          corporateName: accResult.account.corporateName,
+          fetched,
+          newSaved: newCount,
+          dedupSkipped: fetched - newCount,
+        });
+
+        send('account-saved', {
+          maskedNumber: accResult.account.maskedNumber,
+          corporateName: accResult.account.corporateName,
+          fetched,
+          newSaved: newCount,
+          dedupSkipped: fetched - newCount,
+        });
+      }
     }
 
     send('done', {
       bankId,
       bankName: bank.info.nameHe,
       daysBack,
-      fromDate: result.fromDate,
-      toDate: result.toDate,
-      accountsCount: result.accounts.length - skippedInactive,
+      fromDate: lastResult?.fromDate,
+      toDate: lastResult?.toDate,
+      accountsCount: perAccount.length,
       skippedInactive,
       totalFetched: totalAll,
       totalNewSaved: totalNew,
@@ -265,39 +281,79 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
 app.get('/api/bank-credentials', requireRole('admin'), (req, res) => {
   const allBanks = listBanks();
   const status = listBankCredentialsStatus();
-  const byId = new Map(status.map(s => [s.bank_id, s]));
+  const byBankId = {};
+  for (const s of status) {
+    if (!byBankId[s.bank_id]) byBankId[s.bank_id] = [];
+    byBankId[s.bank_id].push(s);
+  }
   res.json({
     vault_configured: vaultConfigured(),
-    banks: allBanks.map(b => {
-      const s = byId.get(b.id);
-      return {
-        id: b.id,
-        name_he: b.nameHe,
-        is_set: s?.is_set === true,
-        updated_at: s?.updated_at || null,
-        updated_by: s?.updated_by || null,
-      };
-    }),
+    banks: allBanks.map(b => ({
+      id: b.id,
+      name_he: b.nameHe,
+      credentials: (byBankId[b.id] || []).map(s => ({
+        id: s.id,
+        label: s.label,
+        is_set: s.is_set === true,
+        updated_at: s.updated_at || null,
+        updated_by: s.updated_by || null,
+      })),
+    })),
   });
 });
 
+// Add a new credential set for a bank
 app.post('/api/bank-credentials/:bankId', requireRole('admin'), (req, res) => {
   const bankId = req.params.bankId;
   if (!bankRegistry[bankId]) return res.status(404).json({ error: 'בנק לא ידוע' });
   if (!vaultConfigured()) return res.status(500).json({ error: 'BANK_VAULT_KEY לא מוגדר ב-env' });
 
+  const label    = (req.body?.label    || '').trim() || 'ראשי';
   const username = (req.body?.username || '').trim() || null;
   const password = (req.body?.password || '').trim() || null;
   const loginUrl = (req.body?.loginUrl || '').trim() || null;
 
-  if (!username && !password && !loginUrl) {
+  try {
+    addBankCredentials(bankId, { label, username, password, loginUrl }, req.user.email);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[bank-creds] add error:', e);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Update an existing credential set
+app.put('/api/bank-credentials/:bankId/:credId', requireRole('admin'), (req, res) => {
+  const { bankId, credId } = req.params;
+  if (!bankRegistry[bankId]) return res.status(404).json({ error: 'בנק לא ידוע' });
+  if (!vaultConfigured()) return res.status(500).json({ error: 'BANK_VAULT_KEY לא מוגדר ב-env' });
+
+  const label    = (req.body?.label    || '').trim() || null;
+  const username = (req.body?.username || '').trim() || null;
+  const password = (req.body?.password || '').trim() || null;
+  const loginUrl = (req.body?.loginUrl || '').trim() || null;
+
+  if (!label && !username && !password && !loginUrl) {
     return res.status(400).json({ error: 'יש למלא לפחות שדה אחד' });
   }
   try {
-    setBankCredentials(bankId, { username, password, loginUrl }, req.user.email);
+    updateBankCredentials(bankId, credId, { label, username, password, loginUrl }, req.user.email);
     res.json({ ok: true });
   } catch (e) {
-    console.error('[bank-creds] save error:', e);
+    console.error('[bank-creds] update error:', e);
+    res.status(400).json({ error: e.message });
+  }
+});
+
+// Delete a credential set
+app.delete('/api/bank-credentials/:bankId/:credId', requireRole('admin'), (req, res) => {
+  const { bankId, credId } = req.params;
+  if (!bankRegistry[bankId]) return res.status(404).json({ error: 'בנק לא ידוע' });
+  try {
+    deleteBankCredentials(bankId, credId, req.user.email);
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('[bank-creds] delete error:', e);
     res.status(500).json({ error: e.message });
   }
 });
@@ -431,7 +487,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     const missing = getTransactionsForPush(accountId);
 
     if (isPreview) {
-      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.priority_cashname) }));
+      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t) }));
       return res.json({
         ok: true,
         dryRun: true,
@@ -454,7 +510,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     const pushedSet = new Set(pushed);
     const pushedLines = missing
       .filter(t => pushedSet.has(t.id))
-      .map(t => buildBankLinePayload(t, acc.priority_cashname));
+      .map(t => buildBankLinePayload(t));
 
     res.json({
       ok: true,
