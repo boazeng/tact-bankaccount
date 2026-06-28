@@ -898,7 +898,8 @@ async function runPriorityCheck() {
       alert('שגיאה בבדיקה מול פריוריטי: ' + (data.error || r.status));
       return;
     }
-    btn.textContent = `✓ ${data.matched}/${data.checked} בפריוריטי`;
+    const fenceStr = data.fenceDate ? ` · יתרה תואמת עד ${fmtDate(data.fenceDate)}` : '';
+    btn.textContent = `✓ ${data.matched}/${data.checked} בפריוריטי${fenceStr}`;
     await renderAccountPage();
   } catch (e) {
     alert('שגיאה: ' + e.message);
@@ -981,6 +982,7 @@ async function runPriorityPreview(id) {
         <div class="push-stat"><span class="num green">${data.matched}</span> כבר בפריוריטי</div>
         <div class="push-stat"><span class="num red">${data.missing}</span> ממתינות לקליטה</div>
         <div class="push-stat">קופה: <code>${escapeHtml(data.cashName)}</code></div>
+        ${data.fenceDate ? `<div class="push-stat">✓ יתרה תואמת עד <strong>${fmtDate(data.fenceDate)}</strong></div>` : ''}
         ${data.bankBalance != null ? `<div class="push-stat">יתרת בנק: <span class="num">${fmtMoney(data.bankBalance)}</span></div>` : ''}
       </div>
       <div class="push-preview-label">תנועות שיישלחו לפריוריטי (${data.previewTotal}):</div>

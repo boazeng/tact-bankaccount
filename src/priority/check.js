@@ -34,7 +34,7 @@ async function fetchPriorityLines(fromDate, toDate, cashName = null) {
   if (cashName) filter += ` and CASHNAME eq '${cashName}'`;
   const params = new URLSearchParams({
     '$filter': filter,
-    '$select': 'CASHNAME,CURDATE,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM',
+    '$select': 'CASHNAME,CURDATE,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM,CURBAL',
     '$top': '5000',
   });
   const url = `${PRIORITY_URL}/BANKLINESA?${params}`;
@@ -83,13 +83,11 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
   let matched = 0;
 
   if (cashName) {
-    // Amount + date matching (±1 day) for cashname accounts.
-    // Pure day-level matching caused false positives (unrelated same-date Priority entries
-    // triggering a match) and false negatives (bookkeeper posts day+1, exact date misses).
-    // Using the amount as the discriminator: a Priority entry only matches our transaction
-    // if it's within ±1 day AND has the same absolute amount.
+    // ── Step 1: build per-date indexes from Priority ─────────────────────
     const priorityByDate = new Map(); // date → [signed amount, ...]
     const dateToBankpage = new Map();
+    // CURBAL: keep the balance of the last line per date (highest KLINE = end-of-day)
+    const priorityBalByDate = new Map(); // date → { balance, kline }
     for (const line of priorityLines) {
       const date = (line.CURDATE || '').slice(0, 10);
       if (!date) continue;
@@ -99,9 +97,45 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       if (!priorityByDate.has(date)) priorityByDate.set(date, []);
       priorityByDate.get(date).push(amount);
       if (!dateToBankpage.has(date)) dateToBankpage.set(date, String(line.BANKPAGE || ''));
+      if (line.CURBAL != null) {
+        const kline = Number(line.KLINE || 0);
+        const cur = priorityBalByDate.get(date);
+        if (!cur || kline > cur.kline) priorityBalByDate.set(date, { balance: Number(line.CURBAL), kline });
+      }
     }
+
+    // ── Step 2: build our bank's end-of-day balance per date ─────────────
+    // Transactions are ordered by date, id ASC — last row per date has the end-of-day balance.
+    const ourBalByDate = new Map(); // date → { balance, id }
     for (const txn of ourTxns) {
-      // Prefer effective_date (תאריך ערך) — that's what bookkeepers enter in Priority
+      if (txn.running_balance == null) continue;
+      const cur = ourBalByDate.get(txn.date);
+      if (!cur || txn.id > cur.id) ourBalByDate.set(txn.date, { balance: txn.running_balance, id: txn.id });
+    }
+
+    // ── Step 3: find balance fence date ──────────────────────────────────
+    // The fence date is the latest date where Priority's end-of-day balance equals
+    // our bank's end-of-day balance (within 0.01). All transactions on or before
+    // the fence date are confirmed complete in Priority — no need to check individually.
+    let fenceDate = null;
+    if (priorityBalByDate.size > 0 && ourBalByDate.size > 0) {
+      const candidateDates = [...ourBalByDate.keys()].filter(d => priorityBalByDate.has(d)).sort();
+      for (const date of candidateDates) {
+        const ourBal = ourBalByDate.get(date).balance;
+        const prioBal = priorityBalByDate.get(date).balance;
+        if (Math.abs(ourBal - prioBal) < 0.01) fenceDate = date;
+      }
+    }
+
+    // ── Step 4: match each transaction ───────────────────────────────────
+    for (const txn of ourTxns) {
+      // Transactions on or before the fence date are verified by balance — all present.
+      if (fenceDate && txn.date <= fenceDate) {
+        matched++;
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
+        continue;
+      }
+      // Post-fence: amount + date matching (±1 day).
       const checkDate = txn.effective_date || txn.date;
       const txnAmount = Number(txn.amount);
       let matchDate = null;
@@ -119,6 +153,16 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
       }
     }
+
+    return {
+      ok: true,
+      priorityLinesChecked: priorityLines.length,
+      ourTxnsChecked: ourTxns.length,
+      matched,
+      updates,
+      dateRange: { from: fromDate, to: toDate },
+      fenceDate,
+    };
   } else {
     // Legacy: date + amount matching (no CASHNAME filter available)
     const index = new Map();

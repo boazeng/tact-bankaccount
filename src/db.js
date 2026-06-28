@@ -431,11 +431,11 @@ export function getAccountBalances() {
 export function getTransactionsForPriorityCheck(accountId) {
   const today = new Date().toISOString().slice(0, 10);
   return db.prepare(`
-    SELECT id, date, effective_date, amount
+    SELECT id, date, effective_date, amount, running_balance
     FROM transactions
     WHERE account_id = ?
       AND date < ?
-    ORDER BY date
+    ORDER BY date, id
   `).all(accountId, today);
 }
 

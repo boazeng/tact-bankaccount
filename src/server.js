@@ -379,6 +379,7 @@ app.post('/api/accounts/:id/check-priority', requireRole('approver'), async (req
       notMatched: result.ourTxnsChecked - result.matched,
       priorityLinesScanned: result.priorityLinesChecked,
       dateRange: result.dateRange,
+      fenceDate: result.fenceDate || null,
     });
   } catch (e) {
     console.error('Priority check error:', e);
@@ -515,6 +516,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
         previewTotal: lines.length,
         bankBalance: acc.last_balance,
         dateRange: checkResult.dateRange,
+        fenceDate: checkResult.fenceDate || null,
       });
     }
 
@@ -542,6 +544,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
       previewTotal: pushed.length,
       bankBalance: acc.last_balance,
       dateRange: checkResult.dateRange,
+      fenceDate: checkResult.fenceDate || null,
     });
   } catch (e) {
     console.error('Push to Priority error:', e);
