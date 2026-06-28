@@ -34,7 +34,7 @@ async function fetchPriorityLines(fromDate, toDate, cashName = null) {
   if (cashName) filter += ` and CASHNAME eq '${cashName}'`;
   const params = new URLSearchParams({
     '$filter': filter,
-    '$select': 'CASHNAME,CURDATE,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM,CURBAL',
+    '$select': 'CASHNAME,CURDATE,CREDIT,DEBIT,BANKPAGE,KLINE,ERECONNUM',
     '$top': '5000',
   });
   const url = `${PRIORITY_URL}/BANKLINESA?${params}`;
