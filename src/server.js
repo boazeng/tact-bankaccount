@@ -53,7 +53,7 @@ async function pushBalancesToFlow() {
   if (!res.ok) throw new Error(`flow responded ${res.status}`);
   console.log('[flow-push] balances pushed:', payload);
 }
-import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages } from './priority/check.js';
+import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages, fetchPriorityLines, shiftDate } from './priority/check.js';
 import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
@@ -468,6 +468,34 @@ app.get('/api/accounts/:id/priority-bankpages-sample', requireRole('approver'), 
       fieldNames: pages[0] ? Object.keys(pages[0]).filter(k => !k.startsWith('@')) : [],
       sample: pages.slice(0, 3),
     });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Diagnostic: show what Priority BANKLINESA has for this account around a specific date.
+// Query: GET /api/accounts/:id/priority-lines-debug?date=2026-06-26&days=2
+app.get('/api/accounts/:id/priority-lines-debug', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  if (!acc.priority_cashname) return res.status(400).json({ error: 'No priority_cashname set' });
+  if (!priorityConfigured()) return res.status(500).json({ error: 'Priority not configured' });
+  const pivotDate = req.query.date || new Date().toISOString().slice(0, 10);
+  const days = Math.min(Number(req.query.days) || 3, 14);
+  const fromDate = shiftDate(pivotDate, -days);
+  const toDate   = shiftDate(pivotDate, +days);
+  try {
+    const lines = await fetchPriorityLines(fromDate, toDate, acc.priority_cashname);
+    const byDate = {};
+    for (const l of lines) {
+      const d = (l.CURDATE || '').slice(0, 10);
+      if (!byDate[d]) byDate[d] = [];
+      const credit = Number(l.CREDIT || 0);
+      const debit  = Number(l.DEBIT  || 0);
+      byDate[d].push({ amount: credit > 0 ? credit : -Math.abs(debit), bankpage: l.BANKPAGE, kline: l.KLINE });
+    }
+    res.json({ cashName: acc.priority_cashname, fromDate, toDate, totalLines: lines.length, byDate });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

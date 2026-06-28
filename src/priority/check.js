@@ -29,7 +29,7 @@ function priorityConfigured() {
  * Fetch all BANKLINESA rows in [fromDate, toDate] for a specific cashName.
  * Returns array of { CURDATE, CREDIT, DEBIT, CASHNAME, BANKPAGE, KLINE }.
  */
-async function fetchPriorityLines(fromDate, toDate, cashName = null) {
+export async function fetchPriorityLines(fromDate, toDate, cashName = null) {
   let filter = `CURDATE ge ${fromDate}T00:00:00Z and CURDATE le ${toDate}T23:59:59Z`;
   if (cashName) filter += ` and CASHNAME eq '${cashName}'`;
   const params = new URLSearchParams({
@@ -47,7 +47,7 @@ async function fetchPriorityLines(fromDate, toDate, cashName = null) {
   return data.value || [];
 }
 
-const shiftDate = (dateStr, days) => {
+export const shiftDate = (dateStr, days) => {
   const d = new Date(dateStr + 'T12:00:00Z');
   d.setUTCDate(d.getUTCDate() + days);
   return d.toISOString().slice(0, 10);
