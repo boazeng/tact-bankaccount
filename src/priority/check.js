@@ -91,10 +91,8 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
     for (const line of priorityLines) {
       const date = (line.CURDATE || '').slice(0, 10);
       if (!date) continue;
-      for (const d of [shiftDate(date, -1), date, shiftDate(date, +1)]) {
-        priorityDates.add(d);
-        if (!dateToBankpage.has(d)) dateToBankpage.set(d, String(line.BANKPAGE || ''));
-      }
+      priorityDates.add(date);
+      if (!dateToBankpage.has(date)) dateToBankpage.set(date, String(line.BANKPAGE || ''));
     }
     for (const txn of ourTxns) {
       // Prefer effective_date (תאריך ערך) — that's what bookkeepers enter in Priority
