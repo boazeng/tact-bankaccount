@@ -18,7 +18,7 @@ import {
   setAccountActive, getInactiveMaskedNumbers,
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
-  setAccountPriorityCashname, getTransactionsForPush,
+  setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
 
@@ -599,6 +599,41 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     });
   } catch (e) {
     console.error('Push to Priority error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Force-push all transactions for a specific date, bypassing Priority matching.
+// Use when matching incorrectly marks transactions as "already in Priority".
+// POST /api/accounts/:id/force-push-date?date=2026-06-26
+app.post('/api/accounts/:id/force-push-date', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  const date = (req.query.date || '').slice(0, 10);
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+    return res.status(400).json({ error: 'נדרש פרמטר date בפורמט YYYY-MM-DD' });
+  }
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  if (!acc.priority_cashname) return res.status(400).json({ error: 'לא הוגדר שם קופה' });
+  if (!priorityConfigured()) return res.status(500).json({ error: 'Priority not configured' });
+
+  try {
+    const txns = getTransactionsForDate(accountId, date);
+    if (!txns.length) return res.json({ ok: true, pushed: 0, message: 'אין תנועות לתאריך זה שטרם נשלחו' });
+
+    const { pushed, failed } = await pushToPriority(txns, acc.priority_cashname, acc.bank_id);
+    if (pushed.length > 0) markTransactionsPushed(pushed);
+
+    res.json({
+      ok: true,
+      date,
+      total: txns.length,
+      pushed: pushed.length,
+      failed: failed.length,
+      failedDetails: failed.slice(0, 10),
+    });
+  } catch (e) {
+    console.error('force-push-date error:', e);
     res.status(500).json({ error: e.message });
   }
 });

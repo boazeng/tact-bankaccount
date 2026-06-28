@@ -799,6 +799,11 @@ async function renderAccountPage() {
           ${!account.priority_cashname ? 'disabled' : ''}>
           👁 תצוגה מקדימה
         </button>
+        <button class="btn btn-ghost btn-sm" id="force-push-date-btn"
+          ${!account.priority_cashname ? 'disabled' : ''}
+          title="קלוט תנועות לפי תאריך ספציפי — עוקף בדיקת matching">
+          ↑ קלוט תאריך
+        </button>
         <button class="btn btn-push btn-sm" id="push-priority-btn"
           ${!account.priority_cashname ? 'disabled title="לחץ קלוט בדף הראשי לזיהוי אוטומטי"' : ''}>
           ↑ קלוט בפריוריטי
@@ -829,6 +834,7 @@ async function renderAccountPage() {
 
     document.getElementById('check-priority-btn').addEventListener('click', runPriorityCheck);
     document.getElementById('preview-priority-btn').addEventListener('click', () => runPriorityPreview(id));
+    document.getElementById('force-push-date-btn').addEventListener('click', () => runForcePushDate(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
     document.getElementById('save-cashname-btn')?.addEventListener('click', () => savePriorityCashname(id));
     document.querySelector('.txn-table')?.addEventListener('click', async (e) => {
@@ -936,6 +942,36 @@ async function savePriorityCashname(id) {
     alert('שגיאה: ' + e.message);
     btn.textContent = 'שמור';
     btn.disabled = false;
+  }
+}
+
+async function runForcePushDate(id) {
+  const date = prompt('הכנס תאריך לקליטה (YYYY-MM-DD):', new Date().toISOString().slice(0, 10));
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+  if (!confirm(`קלוט לפריוריטי את כל תנועות ${fmtDate(date)}?\n(עוקף בדיקת matching — ישלח ישירות)`)) return;
+
+  const btn = document.getElementById('force-push-date-btn');
+  const resultEl = document.getElementById('priority-push-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ קולט...';
+  resultEl.innerHTML = '';
+  try {
+    const r = await fetch(`/api/accounts/${id}/force-push-date?date=${date}`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) {
+      resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(data.error || String(r.status))}</div>`;
+      return;
+    }
+    resultEl.innerHTML = `<div class="push-result-card ${data.failed === 0 ? 'push-all-ok' : ''}">
+      ${data.pushed > 0 ? `✓ נקלטו ${data.pushed} תנועות מ-${fmtDate(date)}` : data.message || 'אין תנועות לשליחה'}
+      ${data.failed > 0 ? `<br>✗ ${data.failed} נכשלו: ${escapeHtml(JSON.stringify(data.failedDetails))}` : ''}
+    </div>`;
+    if (data.pushed > 0) await renderAccountPage();
+  } catch (e) {
+    resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '↑ קלוט תאריך';
   }
 }
 

@@ -481,6 +481,18 @@ export function batchSetPriorityCashnames(updates) {
   tx(updates);
 }
 
+export function getTransactionsForDate(accountId, date) {
+  return db.prepare(`
+    SELECT id, date, description, extended_description, beneficiary_name,
+           beneficiary_bank_code, beneficiary_branch, beneficiary_account,
+           amount, reference_number
+    FROM transactions
+    WHERE account_id = ? AND date = ?
+      AND pushed_to_priority_at IS NULL
+    ORDER BY id
+  `).all(accountId, date);
+}
+
 export function getTransactionsForPush(accountId) {
   const today = new Date().toISOString().slice(0, 10);
   return db.prepare(`
