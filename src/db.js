@@ -488,7 +488,6 @@ export function getTransactionsForDate(accountId, date) {
            amount, reference_number
     FROM transactions
     WHERE account_id = ? AND date = ?
-      AND pushed_to_priority_at IS NULL
     ORDER BY id
   `).all(accountId, date);
 }
