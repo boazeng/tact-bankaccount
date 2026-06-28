@@ -83,11 +83,9 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
   let matched = 0;
 
   if (cashName) {
-    // ── Step 1: build per-date indexes from Priority ─────────────────────
+    // ── Step 1: build per-date amount index from BANKLINESA ──────────────
     const priorityByDate = new Map(); // date → [signed amount, ...]
     const dateToBankpage = new Map();
-    // CURBAL: keep the balance of the last line per date (highest KLINE = end-of-day)
-    const priorityBalByDate = new Map(); // date → { balance, kline }
     for (const line of priorityLines) {
       const date = (line.CURDATE || '').slice(0, 10);
       if (!date) continue;
@@ -97,15 +95,35 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       if (!priorityByDate.has(date)) priorityByDate.set(date, []);
       priorityByDate.get(date).push(amount);
       if (!dateToBankpage.has(date)) dateToBankpage.set(date, String(line.BANKPAGE || ''));
-      if (line.CURBAL != null) {
-        const kline = Number(line.KLINE || 0);
-        const cur = priorityBalByDate.get(date);
-        if (!cur || kline > cur.kline) priorityBalByDate.set(date, { balance: Number(line.CURBAL), kline });
-      }
     }
 
-    // ── Step 2: build our bank's end-of-day balance per date ─────────────
-    // Transactions are ordered by date, id ASC — last row per date has the end-of-day balance.
+    // ── Step 2: fetch BANKPAGES to get end-of-day balances ───────────────
+    // BANKPAGES has one record per day. We auto-discover the balance field
+    // (field name contains "BAL") since the name may vary by Priority version.
+    const priorityBalByDate = new Map(); // date → closing balance
+    try {
+      const bankPages = await fetchBankPages(fromDate, toDate, cashName);
+      if (bankPages.length > 0) {
+        // Find the balance field: prefer closing/end balance over opening/start
+        const sample = bankPages[0];
+        const candidates = Object.keys(sample).filter(k => /BAL/i.test(k) && sample[k] != null);
+        const balField = candidates.find(k => /CLS|CLOSE|END/i.test(k))
+          || candidates.find(k => /OP|OPEN|START/i.test(k))
+          || candidates[0] || null;
+        if (balField) {
+          console.log(`[priority-check] balance field: ${balField}`);
+          for (const page of bankPages) {
+            const date = (page.CURDATE || '').slice(0, 10);
+            if (date && page[balField] != null) priorityBalByDate.set(date, Number(page[balField]));
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('[priority-check] BANKPAGES fetch failed (balance fence disabled):', e.message);
+    }
+
+    // ── Step 3: build our bank's end-of-day balance per date ─────────────
+    // Transactions are ordered by date, id ASC — last row per date has end-of-day balance.
     const ourBalByDate = new Map(); // date → { balance, id }
     for (const txn of ourTxns) {
       if (txn.running_balance == null) continue;
@@ -113,21 +131,20 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       if (!cur || txn.id > cur.id) ourBalByDate.set(txn.date, { balance: txn.running_balance, id: txn.id });
     }
 
-    // ── Step 3: find balance fence date ──────────────────────────────────
-    // The fence date is the latest date where Priority's end-of-day balance equals
-    // our bank's end-of-day balance (within 0.01). All transactions on or before
-    // the fence date are confirmed complete in Priority — no need to check individually.
+    // ── Step 4: find balance fence date ──────────────────────────────────
+    // Latest date where Priority's end-of-day balance == our bank's balance (within 0.01).
+    // All transactions on or before that date are confirmed present in Priority.
     let fenceDate = null;
     if (priorityBalByDate.size > 0 && ourBalByDate.size > 0) {
       const candidateDates = [...ourBalByDate.keys()].filter(d => priorityBalByDate.has(d)).sort();
       for (const date of candidateDates) {
         const ourBal = ourBalByDate.get(date).balance;
-        const prioBal = priorityBalByDate.get(date).balance;
+        const prioBal = priorityBalByDate.get(date);
         if (Math.abs(ourBal - prioBal) < 0.01) fenceDate = date;
       }
     }
 
-    // ── Step 4: match each transaction ───────────────────────────────────
+    // ── Step 5: match each transaction ───────────────────────────────────
     for (const txn of ourTxns) {
       // Transactions on or before the fence date are verified by balance — all present.
       if (fenceDate && txn.date <= fenceDate) {
