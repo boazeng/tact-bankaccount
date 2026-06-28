@@ -192,7 +192,7 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
           extendedDescription: t.activityDescriptionIncludeValueDate || null,
           amount: signedAmount,
           runningBalance: t.currentBalance,
-          beneficiaryName: ben.partyHeadline || ben.beneficiaryName || null,
+          beneficiaryName: ben.beneficiaryName || ben.partyHeadline || null,
           beneficiaryBankCode: ben.bankNumber != null ? String(ben.bankNumber) : null,
           beneficiaryBranch: ben.branchNumber != null ? String(ben.branchNumber) : null,
           beneficiaryAccountNumber: ben.accountNumber != null ? String(ben.accountNumber) : null,

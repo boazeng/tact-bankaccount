@@ -24,6 +24,14 @@ export function buildBankLinePayload(txn, bankId) {
     combined = [txn.description, txn.extended_description, txn.beneficiary_name]
       .filter(Boolean)
       .join(' | ');
+  } else if (bankId === 'poalim') {
+    const desc = txn.description ?? '';
+    // partyHeadline labels ("לטובת:" / "המבצע:") are not names — skip them
+    const isLabel = /^(לטובת|המבצע)\s*:?$/.test((txn.beneficiary_name ?? '').trim());
+    const name = !isLabel ? (txn.beneficiary_name || null) : null;
+    const acctParts = [txn.beneficiary_bank_code, txn.beneficiary_branch, txn.beneficiary_account].filter(Boolean);
+    const acctId = acctParts.length === 3 ? acctParts.join('-') : null;
+    combined = [name, desc, acctId].filter(Boolean).join(' | ');
   } else {
     const action = txn.description ?? '';
     const cleanedExtended = (txn.extended_description ?? '').replace(/\d+/g, '').trim();

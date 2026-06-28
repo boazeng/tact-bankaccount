@@ -484,7 +484,9 @@ export function batchSetPriorityCashnames(updates) {
 export function getTransactionsForPush(accountId) {
   const today = new Date().toISOString().slice(0, 10);
   return db.prepare(`
-    SELECT id, date, description, extended_description, beneficiary_name, amount, reference_number
+    SELECT id, date, description, extended_description, beneficiary_name,
+           beneficiary_bank_code, beneficiary_branch, beneficiary_account,
+           amount, reference_number
     FROM transactions
     WHERE account_id = ?
       AND in_priority = 0
