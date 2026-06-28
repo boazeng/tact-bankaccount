@@ -481,6 +481,14 @@ export function batchSetPriorityCashnames(updates) {
   tx(updates);
 }
 
+export function getEndOfDayBalance(accountId, date) {
+  return db.prepare(`
+    SELECT running_balance FROM transactions
+    WHERE account_id = ? AND date = ? AND running_balance IS NOT NULL
+    ORDER BY id DESC LIMIT 1
+  `).get(accountId, date);
+}
+
 export function getTransactionsForDate(accountId, date) {
   return db.prepare(`
     SELECT id, date, description, extended_description, beneficiary_name,

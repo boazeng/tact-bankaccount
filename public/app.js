@@ -962,9 +962,19 @@ async function runForcePushDate(id) {
       resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(data.error || String(r.status))}</div>`;
       return;
     }
+    const bc = data.balanceCheck;
+    let balHtml = '';
+    if (bc && !bc.error) {
+      const icon = bc.match ? '✓' : '✗';
+      const cls  = bc.match ? 'color:var(--color-pos)' : 'color:var(--color-neg)';
+      balHtml = `<br><span style="${cls}">${icon} יתרת פריוריטי ${fmtMoney(bc.priorityBalance)} · יתרת בנק ${fmtMoney(bc.ourBalance)}${bc.match ? ' — תואם' : ` · סטייה ${fmtMoney(bc.diff)}`}</span>`;
+    } else if (bc?.error) {
+      balHtml = `<br><span style="color:var(--color-warn)">⚠ אימות יתרה: ${escapeHtml(bc.error)}</span>`;
+    }
     resultEl.innerHTML = `<div class="push-result-card ${data.failed === 0 ? 'push-all-ok' : ''}">
-      ${data.pushed > 0 ? `✓ נקלטו ${data.pushed} תנועות מ-${fmtDate(date)}` : data.message || 'אין תנועות לשליחה'}
+      ${data.pushed > 0 ? `✓ נקלטו ${data.pushed} מתוך ${data.total} תנועות מ-${fmtDate(date)}` : data.message || 'אין תנועות לשליחה'}
       ${data.failed > 0 ? `<br>✗ ${data.failed} נכשלו: ${escapeHtml(JSON.stringify(data.failedDetails))}` : ''}
+      ${balHtml}
     </div>`;
     if (data.pushed > 0) await renderAccountPage();
   } catch (e) {

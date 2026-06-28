@@ -19,6 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
+  getEndOfDayBalance,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
 
@@ -619,10 +620,38 @@ app.post('/api/accounts/:id/force-push-date', requireRole('approver'), async (re
 
   try {
     const txns = getTransactionsForDate(accountId, date);
-    if (!txns.length) return res.json({ ok: true, pushed: 0, message: 'אין תנועות לתאריך זה שטרם נשלחו' });
+    if (!txns.length) return res.json({ ok: true, pushed: 0, message: 'אין תנועות לתאריך זה' });
 
     const { pushed, failed } = await pushToPriority(txns, acc.priority_cashname, acc.bank_id);
     if (pushed.length > 0) markTransactionsPushed(pushed);
+
+    // Balance verification: compare Priority's end-of-day balance with ours
+    let balanceCheck = null;
+    const ourBalRow = getEndOfDayBalance(accountId, date);
+    if (ourBalRow) {
+      try {
+        const pages = await fetchBankPages(date, date, acc.priority_cashname);
+        if (pages.length > 0) {
+          const sample = pages[0];
+          const candidates = Object.keys(sample).filter(k => /BAL/i.test(k) && sample[k] != null);
+          const balField = candidates.find(k => /CLS|CLOSE|END/i.test(k))
+            || candidates.find(k => /OP|OPEN|START/i.test(k))
+            || candidates[0] || null;
+          if (balField) {
+            const priorityBal = Number(pages[0][balField]);
+            const ourBal = ourBalRow.running_balance;
+            const diff = Math.abs(priorityBal - ourBal);
+            balanceCheck = { ourBalance: ourBal, priorityBalance: priorityBal, diff, match: diff < 0.01, field: balField };
+          } else {
+            balanceCheck = { error: `BANKPAGES נמצא אך ללא שדה יתרה. שדות: ${Object.keys(sample).join(', ')}` };
+          }
+        } else {
+          balanceCheck = { error: 'BANKPAGES לא נמצא עבור תאריך זה בפריוריטי' };
+        }
+      } catch (e) {
+        balanceCheck = { error: `שגיאה בשליפת BANKPAGES: ${e.message}` };
+      }
+    }
 
     res.json({
       ok: true,
@@ -631,6 +660,7 @@ app.post('/api/accounts/:id/force-push-date', requireRole('approver'), async (re
       pushed: pushed.length,
       failed: failed.length,
       failedDetails: failed.slice(0, 10),
+      balanceCheck,
     });
   } catch (e) {
     console.error('force-push-date error:', e);
