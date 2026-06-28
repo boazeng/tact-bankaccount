@@ -290,4 +290,22 @@ export function matchCashnameToAccount(account, cashBanks) {
   return null;
 }
 
+/**
+ * Fetch BANKPAGES records for a cashName in [fromDate, toDate].
+ * No $select — returns all fields so callers can discover available balance fields.
+ */
+export async function fetchBankPages(fromDate, toDate, cashName) {
+  if (!priorityConfigured()) throw new Error('Priority not configured');
+  const filter = `CASHNAME eq '${cashName}' and CURDATE ge ${fromDate}T00:00:00Z and CURDATE le ${toDate}T23:59:59Z`;
+  const params = new URLSearchParams({ '$filter': filter, '$top': '500' });
+  const url = `${PRIORITY_URL}/BANKPAGES?${params}`;
+  const r = await fetch(url, { headers });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`Priority BANKPAGES query failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value || [];
+}
+
 export { priorityConfigured };

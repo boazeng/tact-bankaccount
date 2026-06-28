@@ -53,7 +53,7 @@ async function pushBalancesToFlow() {
   if (!res.ok) throw new Error(`flow responded ${res.status}`);
   console.log('[flow-push] balances pushed:', payload);
 }
-import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount } from './priority/check.js';
+import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages } from './priority/check.js';
 import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
@@ -446,6 +446,29 @@ app.post('/api/priority/auto-match-cashnames', requireRole('approver'), async (r
     });
   } catch (e) {
     console.error('auto-match-cashnames error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Inspect BANKPAGES fields for a given account — used to discover available balance fields.
+// Returns up to 3 recent BANKPAGES entries with all their raw fields.
+app.get('/api/accounts/:id/priority-bankpages-sample', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  const acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  if (!acc.priority_cashname) return res.status(400).json({ error: 'No priority_cashname set for this account' });
+  if (!priorityConfigured()) return res.status(500).json({ error: 'Priority not configured' });
+  try {
+    const toDate = new Date().toISOString().slice(0, 10);
+    const fromDate = new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10);
+    const pages = await fetchBankPages(fromDate, toDate, acc.priority_cashname);
+    res.json({
+      cashName: acc.priority_cashname,
+      count: pages.length,
+      fieldNames: pages[0] ? Object.keys(pages[0]).filter(k => !k.startsWith('@')) : [],
+      sample: pages.slice(0, 3),
+    });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
