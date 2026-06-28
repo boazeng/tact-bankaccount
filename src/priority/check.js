@@ -83,23 +83,38 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
   let matched = 0;
 
   if (cashName) {
-    // Day-level matching: build a Set of dates that exist in Priority for this account.
-    // Index each date and its ±1 neighbours to absorb posting-date vs value-date skew.
-    const priorityDates = new Set();
-    // Also keep a map from date → first BANKPAGE seen that day (for the bankpage field)
+    // Amount + date matching (±1 day) for cashname accounts.
+    // Pure day-level matching caused false positives (unrelated same-date Priority entries
+    // triggering a match) and false negatives (bookkeeper posts day+1, exact date misses).
+    // Using the amount as the discriminator: a Priority entry only matches our transaction
+    // if it's within ±1 day AND has the same absolute amount.
+    const priorityByDate = new Map(); // date → [signed amount, ...]
     const dateToBankpage = new Map();
     for (const line of priorityLines) {
       const date = (line.CURDATE || '').slice(0, 10);
       if (!date) continue;
-      priorityDates.add(date);
+      const credit = Number(line.CREDIT || 0);
+      const debit = Number(line.DEBIT || 0);
+      const amount = credit > 0 ? credit : -Math.abs(debit);
+      if (!priorityByDate.has(date)) priorityByDate.set(date, []);
+      priorityByDate.get(date).push(amount);
       if (!dateToBankpage.has(date)) dateToBankpage.set(date, String(line.BANKPAGE || ''));
     }
     for (const txn of ourTxns) {
       // Prefer effective_date (תאריך ערך) — that's what bookkeepers enter in Priority
       const checkDate = txn.effective_date || txn.date;
-      if (priorityDates.has(checkDate)) {
+      const txnAmount = Number(txn.amount);
+      let matchDate = null;
+      for (const d of [checkDate, shiftDate(checkDate, -1), shiftDate(checkDate, +1)]) {
+        const amounts = priorityByDate.get(d);
+        if (amounts && amounts.some(a => Math.abs(a - txnAmount) < 0.005)) {
+          matchDate = d;
+          break;
+        }
+      }
+      if (matchDate !== null) {
         matched++;
-        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(checkDate) || null });
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(matchDate) || null });
       } else {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
       }
