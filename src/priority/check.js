@@ -131,28 +131,28 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       if (!cur || txn.id > cur.id) ourBalByDate.set(txn.date, { balance: txn.running_balance, id: txn.id });
     }
 
-    // ── Step 4: find balance fence date ──────────────────────────────────
-    // Latest date where Priority's end-of-day balance == our bank's balance (within 0.01).
-    // All transactions on or before that date are confirmed present in Priority.
+    // ── Step 4 & 5: match each transaction ───────────────────────────────
+    // Primary check: per-date balance comparison (authoritative, no false positives).
+    //   - Balance matches → all our transactions on that date are in Priority.
+    //   - Balance mismatch → all our transactions on that date need to be pushed.
+    // Fallback: amount+date matching (±1 day) only when BANKPAGES has no entry for a date.
     let fenceDate = null;
-    if (priorityBalByDate.size > 0 && ourBalByDate.size > 0) {
-      const candidateDates = [...ourBalByDate.keys()].filter(d => priorityBalByDate.has(d)).sort();
-      for (const date of candidateDates) {
-        const ourBal = ourBalByDate.get(date).balance;
-        const prioBal = priorityBalByDate.get(date);
-        if (Math.abs(ourBal - prioBal) < 0.01) fenceDate = date;
-      }
-    }
-
-    // ── Step 5: match each transaction ───────────────────────────────────
     for (const txn of ourTxns) {
-      // Transactions on or before the fence date are verified by balance — all present.
-      if (fenceDate && txn.date <= fenceDate) {
-        matched++;
-        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
+      const prioBal = priorityBalByDate.get(txn.date);
+      const ourBalEntry = ourBalByDate.get(txn.date);
+
+      if (prioBal != null && ourBalEntry != null) {
+        if (Math.abs(prioBal - ourBalEntry.balance) < 0.01) {
+          matched++;
+          updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
+          if (!fenceDate || txn.date > fenceDate) fenceDate = txn.date;
+        } else {
+          updates.push({ id: txn.id, inPriority: 0, bankpage: null });
+        }
         continue;
       }
-      // Post-fence: amount + date matching (±1 day).
+
+      // No BANKPAGES balance for this date — fall back to amount+date matching (±1 day).
       const checkDate = txn.effective_date || txn.date;
       const txnAmount = Number(txn.amount);
       let matchDate = null;
