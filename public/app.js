@@ -906,6 +906,17 @@ async function runPriorityCheck() {
     }
     const fenceStr = data.fenceDate ? ` · יתרה תואמת עד ${fmtDate(data.fenceDate)}` : '';
     btn.textContent = `✓ ${data.matched}/${data.checked} בפריוריטי${fenceStr}`;
+    if (data.balanceDiscrepancy) {
+      const bd = data.balanceDiscrepancy;
+      const resultEl = document.getElementById('priority-push-result');
+      if (resultEl) {
+        resultEl.innerHTML = `<div class="push-result-card" style="border-color:var(--color-neg)">
+          ⚠ <strong>פער יתרה ב-${fmtDate(bd.date)}</strong>:
+          בנק ${fmtMoney(bd.ourBalance)} · פריוריטי ${fmtMoney(bd.priorityBalance)} · הפרש ${fmtMoney(bd.diff)}
+          <br><small>ייתכן שתנועות נקלטו בטעות כ"נמצאו בפריוריטי" — השתמשי ב"↑ קלוט תאריך" לתיקון</small>
+        </div>`;
+      }
+    }
     await renderAccountPage();
   } catch (e) {
     alert('שגיאה: ' + e.message);

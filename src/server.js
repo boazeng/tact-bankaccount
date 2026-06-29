@@ -569,6 +569,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
         bankBalance: acc.last_balance,
         dateRange: checkResult.dateRange,
         fenceDate: checkResult.fenceDate || null,
+        balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
       });
     }
 
@@ -597,6 +598,7 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
       bankBalance: acc.last_balance,
       dateRange: checkResult.dateRange,
       fenceDate: checkResult.fenceDate || null,
+      balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
     });
   } catch (e) {
     console.error('Push to Priority error:', e);

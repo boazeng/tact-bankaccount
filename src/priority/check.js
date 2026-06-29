@@ -148,26 +148,49 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
 
     // ── Step 5: match each transaction ───────────────────────────────────
     // Pre-fence: confirmed by balance — safe.
-    // Post-fence: amount + EXACT date matching only (no ±1 day).
-    //   Using ±1 day post-fence caused false positives (e.g. a 4 NIS commission
-    //   on date B matched a different 4 NIS Priority entry on adjacent date A).
-    //   Pre-fence transactions with a date shift (e.g. entered under the next day
-    //   in Priority) are already covered by the balance fence, so ±1 is not needed.
+    // Post-fence: exact-date amount matching with consumed-entry tracking.
+    //   Each Priority BANKLINESA entry can only match ONE of our transactions.
+    //   Without this, two of our 4 NIS transactions on the same date would both
+    //   match the single 4 NIS in Priority, hiding the second one as a false positive.
+    //   No ±1 day — pre-fence covers shifted dates; ±1 caused false positives post-fence.
+    const availableByDate = new Map(); // mutable copy for consumed tracking
+    for (const [date, amounts] of priorityByDate) availableByDate.set(date, [...amounts]);
+
     for (const txn of ourTxns) {
       if (fenceDate && txn.date <= fenceDate) {
         matched++;
         updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
         continue;
       }
-      // Post-fence: exact date match only.
       const checkDate = txn.effective_date || txn.date;
       const txnAmount = Number(txn.amount);
-      const amounts = priorityByDate.get(checkDate);
-      if (amounts && amounts.some(a => Math.abs(a - txnAmount) < 0.005)) {
+      const available = availableByDate.get(checkDate);
+      const idx = available ? available.findIndex(a => Math.abs(a - txnAmount) < 0.005) : -1;
+      if (idx !== -1) {
+        available.splice(idx, 1); // consume so it can't match a second transaction
         matched++;
         updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(checkDate) || null });
       } else {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
+      }
+    }
+
+    // ── Step 6: detect balance discrepancy after fence ────────────────────
+    // If a fence was found (meaning the discovered balance field is reliable),
+    // look for the most recent date where Priority's balance ≠ our balance.
+    // This catches false-positive matches where amount matching found a wrong entry.
+    let balanceDiscrepancy = null;
+    if (fenceDate && priorityBalByDate.size > 0 && ourBalByDate.size > 0) {
+      const postFenceDates = [...ourBalByDate.keys()]
+        .filter(d => d > fenceDate && priorityBalByDate.has(d))
+        .sort();
+      for (const date of postFenceDates) {
+        const ourBal = ourBalByDate.get(date).balance;
+        const prioBal = priorityBalByDate.get(date);
+        if (Math.abs(ourBal - prioBal) >= 0.01) {
+          balanceDiscrepancy = { date, ourBalance: ourBal, priorityBalance: prioBal, diff: Math.abs(ourBal - prioBal) };
+          break;
+        }
       }
     }
 
@@ -179,6 +202,7 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       updates,
       dateRange: { from: fromDate, to: toDate },
       fenceDate,
+      balanceDiscrepancy,
     };
   } else {
     // Legacy: date + amount matching (no CASHNAME filter available)
