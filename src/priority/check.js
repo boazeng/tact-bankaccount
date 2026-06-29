@@ -131,41 +131,41 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
       if (!cur || txn.id > cur.id) ourBalByDate.set(txn.date, { balance: txn.running_balance, id: txn.id });
     }
 
-    // ── Step 4 & 5: match each transaction ───────────────────────────────
-    // Primary check: per-date balance comparison (authoritative, no false positives).
-    //   - Balance matches → all our transactions on that date are in Priority.
-    //   - Balance mismatch → all our transactions on that date need to be pushed.
-    // Fallback: amount+date matching (±1 day) only when BANKPAGES has no entry for a date.
+    // ── Step 4: find balance fence date ──────────────────────────────────
+    // Latest date where Priority's closing balance == our running balance (within ±0.01).
+    // All our transactions on or before that date are confirmed present in Priority.
+    // We never use balance MISMATCH to reject — only balance MATCH to confirm, because
+    // the discovered balance field might be opening rather than closing balance.
     let fenceDate = null;
-    for (const txn of ourTxns) {
-      const prioBal = priorityBalByDate.get(txn.date);
-      const ourBalEntry = ourBalByDate.get(txn.date);
+    if (priorityBalByDate.size > 0 && ourBalByDate.size > 0) {
+      const candidateDates = [...ourBalByDate.keys()].filter(d => priorityBalByDate.has(d)).sort();
+      for (const date of candidateDates) {
+        const ourBal = ourBalByDate.get(date).balance;
+        const prioBal = priorityBalByDate.get(date);
+        if (Math.abs(ourBal - prioBal) < 0.01) fenceDate = date;
+      }
+    }
 
-      if (prioBal != null && ourBalEntry != null) {
-        if (Math.abs(prioBal - ourBalEntry.balance) < 0.01) {
-          matched++;
-          updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
-          if (!fenceDate || txn.date > fenceDate) fenceDate = txn.date;
-        } else {
-          updates.push({ id: txn.id, inPriority: 0, bankpage: null });
-        }
+    // ── Step 5: match each transaction ───────────────────────────────────
+    // Pre-fence: confirmed by balance — safe.
+    // Post-fence: amount + EXACT date matching only (no ±1 day).
+    //   Using ±1 day post-fence caused false positives (e.g. a 4 NIS commission
+    //   on date B matched a different 4 NIS Priority entry on adjacent date A).
+    //   Pre-fence transactions with a date shift (e.g. entered under the next day
+    //   in Priority) are already covered by the balance fence, so ±1 is not needed.
+    for (const txn of ourTxns) {
+      if (fenceDate && txn.date <= fenceDate) {
+        matched++;
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
         continue;
       }
-
-      // No BANKPAGES balance for this date — fall back to amount+date matching (±1 day).
+      // Post-fence: exact date match only.
       const checkDate = txn.effective_date || txn.date;
       const txnAmount = Number(txn.amount);
-      let matchDate = null;
-      for (const d of [checkDate, shiftDate(checkDate, -1), shiftDate(checkDate, +1)]) {
-        const amounts = priorityByDate.get(d);
-        if (amounts && amounts.some(a => Math.abs(a - txnAmount) < 0.005)) {
-          matchDate = d;
-          break;
-        }
-      }
-      if (matchDate !== null) {
+      const amounts = priorityByDate.get(checkDate);
+      if (amounts && amounts.some(a => Math.abs(a - txnAmount) < 0.005)) {
         matched++;
-        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(matchDate) || null });
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(checkDate) || null });
       } else {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
       }
