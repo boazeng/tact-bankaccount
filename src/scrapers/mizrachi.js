@@ -211,6 +211,27 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       const rows = txnBody?.body?.table?.rows ?? [];
       const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
 
+      // TEMP DEBUG — remove once we've root-caused the "success but 0 transactions" issue.
+      onProgress({
+        step: 'debug-txn-shape',
+        message: `[DEBUG] ${maskedNumber}: status=${txnResp.status} bodyKeys=${txnBody ? Object.keys(txnBody).join(',') : 'unparseable'} rows=${rows.length} realRows=${realRows.length}` +
+          (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')}` : ''),
+        account: maskedNumber,
+      });
+      if (rows.length && !realRows.length) {
+        onProgress({
+          step: 'debug-txn-sample',
+          message: `[DEBUG] sample row: ${JSON.stringify(rows[0]).slice(0, 1200)}`,
+          account: maskedNumber,
+        });
+      } else if (!rows.length) {
+        onProgress({
+          step: 'debug-txn-sample',
+          message: `[DEBUG] raw body (truncated): ${(txnResp.text || '').slice(0, 1200)}`,
+          account: maskedNumber,
+        });
+      }
+
       const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
       const transactions = realRows.map(r => {
         const amountRaw = Number(String(r.MC02SchumEZ || 0).replace(/,/g, ''));
