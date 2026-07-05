@@ -17,6 +17,28 @@ const ddmmyyyy = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getM
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// The bank's transactions endpoint (get428Index) is gated by Radware Bot
+// Manager — raw fetch() calls fired right after login get bounced back
+// through SiteMinder re-auth (errorcode=198) because there's no human
+// mouse/scroll signal for its behavioral check to score. This simulates
+// that signal before hitting protected endpoints. Best-effort: swallow
+// any failure, since this is a heuristic, not a correctness requirement.
+async function humanizeInteraction(page) {
+  try {
+    const viewport = page.viewport() || { width: 1400, height: 900 };
+    for (let i = 0; i < 3; i++) {
+      const x = Math.min(80 + Math.random() * (viewport.width - 160), viewport.width - 10);
+      const y = Math.min(120 + Math.random() * (viewport.height - 240), viewport.height - 10);
+      await page.mouse.move(x, y, { steps: 15 + Math.floor(Math.random() * 10) });
+      await sleep(150 + Math.random() * 250);
+    }
+    await page.evaluate(() => window.scrollBy(0, 250));
+    await sleep(200 + Math.random() * 200);
+    await page.evaluate(() => window.scrollBy(0, -250));
+    await sleep(150 + Math.random() * 200);
+  } catch {}
+}
+
 export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {}, onSmsRequired }) {
   const { userId, password } = credentials;
   if (!userId || !password) throw new Error('scrapeMizrachi: missing userId/password');
@@ -112,6 +134,7 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
     }
 
     onProgress({ step: 'logged-in', message: 'מחובר — שולף רשימת חשבונות' });
+    await humanizeInteraction(page);
 
     // Wait for the SPA's logon call to fire (it's part of the dashboard bootstrap).
     const waitStart = Date.now();
@@ -182,8 +205,11 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         ? Number(switchBody.body.YitraAdkanit)
         : (acc.Remain != null ? Number(acc.Remain) : null);
 
-      // changeAccount may take a moment to propagate session state.
-      await sleep(800);
+      // changeAccount may take a moment to propagate session state. Also give
+      // the bot-manager's behavioral check something to observe before the
+      // protected get428Index call (see humanizeInteraction above).
+      await sleep(500);
+      await humanizeInteraction(page);
 
       // Fetch transactions for this account
       const txnResp = await page.evaluate(async (from, to) => {
