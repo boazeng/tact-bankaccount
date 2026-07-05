@@ -223,9 +223,12 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       // WAF block, etc.) — surface it as an explicit account-level error
       // instead of silently reporting zero transactions as a fake success.
       if (!txnBody) {
+        const body = txnResp.text || '';
+        const hasLoginForm = /userNumberDesktopHeb|passwordDesktopHeb/.test(body);
+        const hasAppShell = /ng-version|app-root/.test(body);
         onProgress({
           step: 'account-error',
-          message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}". לא נמשכו תנועות. תחילת גוף התגובה: ${(txnResp.text || '').slice(0, 500)}`,
+          message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}" bodyLength=${body.length} hasLoginForm=${hasLoginForm} hasAppShell=${hasAppShell}. לא נמשכו תנועות. גוף התגובה (3000 תווים ראשונים): ${body.slice(0, 3000)}`,
           account: maskedNumber,
         });
         continue;
