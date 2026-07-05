@@ -208,29 +208,24 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
 
       let txnBody = null;
       try { txnBody = JSON.parse(txnResp.text || '{}'); } catch {}
+
+      // get428Index should always return JSON. A parse failure means the bank
+      // served an interstitial page instead (seen in practice: an "update
+      // your email address" / step-up verification gate at legacy page
+      // GE/P012) — the session is logged in but blocked from fetching data.
+      // Treat this as an account-level error instead of silently reporting
+      // zero transactions as if that were a legitimate empty result.
+      if (!txnBody) {
+        onProgress({
+          step: 'account-error',
+          message: `חשבון ${maskedNumber}: הבנק החזיר דף חסימה/אימות במקום נתונים (כנראה נדרשת פעולה ידנית באתר, למשל עדכון פרטים) — לא נמשכו תנועות. תגובה גולמית: ${(txnResp.text || '').slice(0, 300)}`,
+          account: maskedNumber,
+        });
+        continue;
+      }
+
       const rows = txnBody?.body?.table?.rows ?? [];
       const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
-
-      // TEMP DEBUG — remove once we've root-caused the "success but 0 transactions" issue.
-      onProgress({
-        step: 'debug-txn-shape',
-        message: `[DEBUG] ${maskedNumber}: status=${txnResp.status} bodyKeys=${txnBody ? Object.keys(txnBody).join(',') : 'unparseable'} rows=${rows.length} realRows=${realRows.length}` +
-          (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')}` : ''),
-        account: maskedNumber,
-      });
-      if (rows.length && !realRows.length) {
-        onProgress({
-          step: 'debug-txn-sample',
-          message: `[DEBUG] sample row: ${JSON.stringify(rows[0]).slice(0, 1200)}`,
-          account: maskedNumber,
-        });
-      } else if (!rows.length) {
-        onProgress({
-          step: 'debug-txn-sample',
-          message: `[DEBUG] raw body (truncated): ${(txnResp.text || '').slice(0, 1200)}`,
-          account: maskedNumber,
-        });
-      }
 
       const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
       const transactions = realRows.map(r => {
