@@ -198,7 +198,16 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
             isFromSearch: false,
           }),
         });
-        return { status: r.status, text: await r.text() };
+        const text = await r.text();
+        const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+        return {
+          status: r.status,
+          redirected: r.redirected,
+          finalUrl: r.url,
+          contentType: r.headers.get('content-type'),
+          title: titleMatch ? titleMatch[1] : null,
+          text,
+        };
       }, fromStr, toStr);
 
       if (txnResp.status >= 400) {
@@ -209,16 +218,14 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       let txnBody = null;
       try { txnBody = JSON.parse(txnResp.text || '{}'); } catch {}
 
-      // get428Index should always return JSON. A parse failure means the bank
-      // served an interstitial page instead (seen in practice: an "update
-      // your email address" / step-up verification gate at legacy page
-      // GE/P012) — the session is logged in but blocked from fetching data.
-      // Treat this as an account-level error instead of silently reporting
-      // zero transactions as if that were a legitimate empty result.
+      // get428Index should always return JSON. A parse failure means something
+      // other than the real API response came back (redirect, challenge page,
+      // WAF block, etc.) — surface it as an explicit account-level error
+      // instead of silently reporting zero transactions as a fake success.
       if (!txnBody) {
         onProgress({
           step: 'account-error',
-          message: `חשבון ${maskedNumber}: הבנק החזיר דף חסימה/אימות במקום נתונים (כנראה נדרשת פעולה ידנית באתר, למשל עדכון פרטים) — לא נמשכו תנועות. תגובה גולמית: ${(txnResp.text || '').slice(0, 300)}`,
+          message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}". לא נמשכו תנועות. תחילת גוף התגובה: ${(txnResp.text || '').slice(0, 500)}`,
           account: maskedNumber,
         });
         continue;
