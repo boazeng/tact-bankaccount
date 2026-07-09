@@ -50,7 +50,9 @@ console.log('\n=== Manual step ===');
 console.log('Browser is open for 5 minutes. Please:');
 console.log('  1. Log in manually.');
 console.log('  2. Navigate to the credit card charges screen ("כרטיסי אשראי" / "חיובי כרטיס").');
-console.log('  3. Open one card\'s detailed charge list (so the app fetches the data).');
+console.log('  3. Open one card\'s detailed charge list.');
+console.log('  4. Use the MONTH SELECTOR on that screen to pick the PREVIOUS month\'s');
+console.log('     charges (not the current/default one) and let it load.');
 console.log('I will capture all relevant API calls in the background — no need to tell me anything.');
 
 await new Promise(r => setTimeout(r, 300_000));

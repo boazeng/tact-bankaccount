@@ -13,6 +13,14 @@ const CARDS_PAGE = 'https://start.telebank.co.il/apollo/business2/#/CARD_DEBIT_T
 
 const ymdToIso = (s) => (s && s.length === 8) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : (s || null);
 
+// The current billing cycle isn't final yet (amounts/dates can still change),
+// so we always pull the last CLOSED cycle instead — one full calendar month
+// back, e.g. "062026" for June when run in July.
+const previousMonthMMYYYY = (base = new Date()) => {
+  const d = new Date(base.getFullYear(), base.getMonth() - 1, 1);
+  return `${String(d.getMonth() + 1).padStart(2, '0')}${d.getFullYear()}`;
+};
+
 export async function scrapeDiscountCards({ credentials, showBrowser = false, onProgress = () => {} }) {
   const { userId, password, loginUrl } = credentials;
   if (!userId || !password || !loginUrl) {
@@ -124,41 +132,54 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
         continue;
       }
 
+      const targetMonth = previousMonthMMYYYY();
+
       for (const card of cards) {
         const cardParams = {
           CardNumber: card.CardNumber,
           CardTypeCode: card.CardTypeCode,
           CardValidityDate: card.CardValidityDate,
         };
+        // DateOfPastDebit (from the summary call above) is the actual bank debit
+        // day for this card's closed cycle — far more reliable than each
+        // transaction's own DebitDate, which is often blank (e.g. standing
+        // orders not yet processed at capture time).
+        const cycleBillingDate = ymdToIso(card.DateOfPastDebit) || null;
 
-        const txnResp = await page.evaluate(async (accNum, params, tplHeaders) => {
+        const txnResp = await page.evaluate(async (accNum, month, params, tplHeaders) => {
           const qs = new URLSearchParams(params).toString();
           const r = await fetch(
-            `/Titan/gatewayAPI/creditCards/cardCurrentDebitTransactions/${accNum}/C?${qs}`,
+            `/Titan/gatewayAPI/creditCards/cardPastDebitTransactions/${accNum}/${month}/C?${qs}`,
             { credentials: 'include', headers: tplHeaders },
           );
           return { status: r.status, body: await r.json().catch(() => null) };
-        }, accountNumber, cardParams, templateHeaders);
+        }, accountNumber, targetMonth, cardParams, templateHeaders);
 
-        const entries = txnResp.body?.CardCurrentDebitTransactions?.CardDebitsTransactionsBlock?.CardDebitsTransactionEntry ?? [];
+        const entries = txnResp.body?.CardPastDebitTransactions?.CardDebitsTransactionsBlock?.CardDebitsTransactionEntry ?? [];
 
-        const transactions = entries.map(e => ({
-          // OrderNumerator disambiguates genuinely identical charges (same
-          // date/time/merchant/amount) that the bank lists as separate lines —
-          // observed in practice, not hypothetical (see plan verification notes).
-          transactionID: [e.PurchaseDate, e.PurchaseTime, card.CardNumber, e.MerchantName, e.PurchaseAmount, e.OrderNumerator].filter(v => v != null).join('|'),
-          purchaseDate: ymdToIso(e.PurchaseDate),
-          billingDate: ymdToIso(e.DebitDate) || null,
-          merchantName: (e.MerchantName || '').trim() || null,
-          amount: -Math.abs(Number(e.DebitAmount ?? e.PurchaseAmount ?? 0)),
-          currency: e.DebitCurrencyCode || e.PurchaseCurrencyCode || 'ILS',
-          originalAmount: (e.PurchaseCurrencyCode && e.PurchaseCurrencyCode !== (e.DebitCurrencyCode || e.PurchaseCurrencyCode))
-            ? Number(e.PurchaseAmount) : null,
-          installmentCurrent: e.InstallmentNumber ? Number(e.InstallmentNumber) : null,
-          installmentTotal: e.TotalNumberOfInstallments ? Number(e.TotalNumberOfInstallments) : null,
-          status: 'posted',
-          raw: e,
-        }));
+        const transactions = entries.map(e => {
+          // Field names differ slightly between the current-cycle and
+          // past-cycle endpoints (e.g. DebitCurrencyCode vs DebitCurrencySymbol) —
+          // checked against real captures from both, not guessed.
+          const purchaseCcy = e.PurchaseCurrencyCode || e.CalPurchaseCurrencySymbol || 'ILS';
+          const debitCcy = e.DebitCurrencyCode || e.DebitCurrencySymbol || e.CalDebitCurrencySymbol || purchaseCcy;
+          return {
+            // OrderNumerator disambiguates genuinely identical charges (same
+            // date/time/merchant/amount) that the bank lists as separate lines —
+            // observed in practice, not hypothetical (see plan verification notes).
+            transactionID: [e.PurchaseDate, e.PurchaseTime, card.CardNumber, e.MerchantName, e.PurchaseAmount, e.OrderNumerator].filter(v => v != null).join('|'),
+            purchaseDate: ymdToIso(e.PurchaseDate),
+            billingDate: cycleBillingDate || ymdToIso(e.DebitDate) || null,
+            merchantName: (e.MerchantName || '').trim() || null,
+            amount: -Math.abs(Number(e.DebitAmount ?? e.PurchaseAmount ?? 0)),
+            currency: debitCcy,
+            originalAmount: (purchaseCcy !== debitCcy) ? Number(e.PurchaseAmount) : null,
+            installmentCurrent: e.InstallmentNumber ? Number(e.InstallmentNumber) : null,
+            installmentTotal: e.TotalNumberOfInstallments ? Number(e.TotalNumberOfInstallments) : null,
+            status: 'posted',
+            raw: e,
+          };
+        });
 
         results.push({
           account: { maskedNumber, corporateName: companyName },
