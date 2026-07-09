@@ -155,7 +155,14 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
           return { status: r.status, body: await r.json().catch(() => null) };
         }, accountNumber, targetMonth, cardParams, templateHeaders);
 
-        const entries = txnResp.body?.CardPastDebitTransactions?.CardDebitsTransactionsBlock?.CardDebitsTransactionEntry ?? [];
+        // An entry with no DebitDate hasn't actually been assigned to THIS
+        // closed cycle yet (it'll show up in next month's fetch instead,
+        // once the bank finalizes it) — even though it appears in the past-
+        // cycle response. Confirmed live: including it overcounted a card's
+        // total by exactly that entry's amount vs. the bank's own
+        // NISTotalDebit for the same cycle.
+        const entries = (txnResp.body?.CardPastDebitTransactions?.CardDebitsTransactionsBlock?.CardDebitsTransactionEntry ?? [])
+          .filter(e => e.DebitDate);
 
         const transactions = entries.map(e => {
           // Field names differ slightly between the current-cycle and
