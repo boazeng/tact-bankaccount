@@ -56,10 +56,18 @@ router.put('/api/credit-cards/:cardId/cashname', requireRole('admin'), (req, res
  * recorded in card_priority_pushes (idempotent — safe to call repeatedly).
  */
 async function pushCardToPriority(card) {
+  const today = new Date().toISOString().slice(0, 10);
   const pages = getPriorityPreviewForCard(card.id).filter(p => !p.pushed);
   const results = [];
   for (const page of pages) {
     if (isPagePushed(card.id, page.curdate)) continue; // race guard alongside the .filter above
+    // Last line of defense: never push a page dated in the future — a real
+    // bank debit can't have happened yet. Confirmed live that stale data
+    // from before a scraper fix reached Priority this way once already.
+    if (page.curdate > today) {
+      results.push({ curdate: page.curdate, ok: false, error: `דף עתידי (${page.curdate}) — לא נקלט` });
+      continue;
+    }
     try {
       const result = await pushCardPageToPriority(card.priority_cashname, page);
       recordPagePushed(card.id, page.curdate, result);

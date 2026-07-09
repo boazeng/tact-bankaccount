@@ -60,6 +60,20 @@ if (!cardCols.includes('priority_cashname')) {
   db.exec(`ALTER TABLE credit_cards ADD COLUMN priority_cashname TEXT`);
 }
 
+// One-time cleanup: an earlier version of the scraper pulled the still-open
+// current cycle, which could include a billing_date that hadn't happened
+// yet (e.g. an upcoming debit date like 2026-07-15 while it was still June).
+// That's never legitimate — a billing_date is only ever set from the bank's
+// own DateOfPastDebit, which by definition already happened. Confirmed live:
+// leftover future-dated rows from before this got pushed to Priority.
+{
+  const today = new Date().toISOString().slice(0, 10);
+  const res = db.prepare(`DELETE FROM card_transactions WHERE billing_date > ?`).run(today);
+  if (res.changes > 0) {
+    console.log(`[credit-cards] purged ${res.changes} card_transactions with a future billing_date`);
+  }
+}
+
 const stmtUpsertCard = db.prepare(`
   INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label)
   VALUES (@bank_id, @account_masked_number, @card_last4, @label)
@@ -221,8 +235,15 @@ export function getPriorityPreviewForCard(cardId) {
     groups.get(date).push(t);
   }
 
+  // Defensive: a billing_date can never legitimately be in the future (it's
+  // only ever set from the bank's own already-happened DateOfPastDebit). This
+  // guards the Priority preview/push even if bad data somehow gets in again,
+  // on top of the one-time purge above.
+  const today = new Date().toISOString().slice(0, 10);
+
   const pages = [];
   for (const [curdate, group] of groups) {
+    if (curdate > today) continue;
     // amount < 0 is a purchase (debit); amount > 0 is a refund/credit the
     // bank already netted into this cycle — each keeps its own sign so the
     // closing line balances to the REAL bank charge, not a naive sum of
