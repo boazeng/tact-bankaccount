@@ -80,6 +80,13 @@ const stmtInsertCardTxn = db.prepare(`
   )
   ON CONFLICT(card_id, bank_transaction_id) DO UPDATE SET
     billing_date = COALESCE(excluded.billing_date, billing_date),
+    merchant_name = excluded.merchant_name,
+    amount = excluded.amount,
+    currency = excluded.currency,
+    original_amount = excluded.original_amount,
+    installment_current = excluded.installment_current,
+    installment_total = excluded.installment_total,
+    status = excluded.status,
     raw_json = excluded.raw_json
 `);
 
