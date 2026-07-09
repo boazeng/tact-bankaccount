@@ -172,20 +172,26 @@ export function getPriorityPreviewForCard(cardId) {
 
   const pages = [];
   for (const [curdate, group] of groups) {
+    // amount < 0 is a purchase (debit); amount > 0 is a refund/credit the
+    // bank already netted into this cycle — each keeps its own sign so the
+    // closing line balances to the REAL bank charge, not a naive sum of
+    // purchases that double-counts refunds as extra debits.
     const lines = group.map(t => ({
       curdate,
+      valueDate: t.purchase_date,
       btcode: '00',
       details: (t.merchant_name || '').slice(0, 24),
-      debit: Math.abs(Number(t.amount)),
-      credit: 0,
+      debit: Number(t.amount) < 0 ? Math.abs(Number(t.amount)) : 0,
+      credit: Number(t.amount) > 0 ? Number(t.amount) : 0,
     }));
-    const total = group.reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0);
+    const netTotal = group.reduce((sum, t) => sum - Number(t.amount), 0);
     lines.push({
       curdate,
+      valueDate: curdate,
       btcode: '00',
       details: 'תשלום בפועל בבנק',
       debit: 0,
-      credit: Math.round(total * 100) / 100,
+      credit: Math.round(netTotal * 100) / 100,
     });
     pages.push({ curdate, lines });
   }

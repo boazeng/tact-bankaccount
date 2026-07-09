@@ -136,6 +136,7 @@ async function togglePriorityPreview(cardId) {
         const rows = page.lines.map(l => `
           <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
             <td>${escapeHtml(l.curdate)}</td>
+            <td>${escapeHtml(l.valueDate)}</td>
             <td>${escapeHtml(l.btcode)}</td>
             <td>${escapeHtml(l.details)}</td>
             <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
@@ -147,7 +148,7 @@ async function togglePriorityPreview(cardId) {
             <div style="font-weight:700; margin-bottom:6px;">דף בנק ליום ${escapeHtml(page.curdate)}</div>
             <div class="txn-table-wrap">
               <table class="txn-table">
-                <thead><tr><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
+                <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
                 <tbody>${rows}</tbody>
               </table>
             </div>

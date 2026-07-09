@@ -171,7 +171,14 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
             purchaseDate: ymdToIso(e.PurchaseDate),
             billingDate: cycleBillingDate || ymdToIso(e.DebitDate) || null,
             merchantName: (e.MerchantName || '').trim() || null,
-            amount: -Math.abs(Number(e.DebitAmount ?? e.PurchaseAmount ?? 0)),
+            // Preserve the bank's sign — forcing abs() here previously turned
+            // refunds/credits into extra debits, inflating the page total
+            // above the real bank charge (confirmed live: system total was
+            // higher than the real one). Negative bank amount (purchase) ->
+            // our negative (expense); positive bank amount (refund) -> ours
+            // positive (credit), matching the sign convention used elsewhere
+            // in this app (src/db.js, src/priority/push.js).
+            amount: -Number(e.DebitAmount ?? e.PurchaseAmount ?? 0),
             currency: debitCcy,
             originalAmount: (purchaseCcy !== debitCcy) ? Number(e.PurchaseAmount) : null,
             installmentCurrent: e.InstallmentNumber ? Number(e.InstallmentNumber) : null,
