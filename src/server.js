@@ -20,8 +20,10 @@ import {
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
   getEndOfDayBalance, getFirstTransactionDate, getTransactionDatesInRange,
+  getTransactionsForBalanceCheck,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
+import { checkBalanceContinuity } from './balance-check.js';
 
 const FLOW_BALANCE_MAPPING = [
   { bankId: 'poalim',   match: 'חניה',   flowKey: 'חניה_פועלים' },
@@ -238,6 +240,24 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
         const fetched = historyToSave.length + pendingToSave.length;
 
         updateLastSync(accountId, accResult.account.balance);
+
+        // Balance-continuity check — verifies the scrape itself (not Priority)
+        // produced an unbroken running-balance chain. Runs right after every
+        // sync so a missing/duplicate bank-side transaction surfaces immediately
+        // instead of waiting for someone to open the account page and notice.
+        try {
+          const balanceResult = checkBalanceContinuity(getTransactionsForBalanceCheck(accountId));
+          if (!balanceResult.ok) {
+            send('balance-check', {
+              accountId,
+              maskedNumber: accResult.account.maskedNumber,
+              corporateName: accResult.account.corporateName,
+              mismatches: balanceResult.mismatches.slice(0, 10),
+            });
+          }
+        } catch (e) {
+          console.warn('[sync] balance-continuity check failed:', e.message);
+        }
 
         totalNew += newCount;
         totalAll += fetched;

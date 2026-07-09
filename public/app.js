@@ -410,6 +410,9 @@ async function startSync(bankId, bankName, days = 30) {
           accountsSaved.push(data);
           const dupNote = data.dedupSkipped > 0 ? ` (${data.dedupSkipped} כפילויות דולגו)` : '';
           addLine(`✓ ${data.corporateName} (${data.maskedNumber}): נשמרו ${data.newSaved} תנועות חדשות${dupNote}`, 'success');
+        } else if (event === 'balance-check') {
+          const dates = data.mismatches.map(m => fmtDate(m.date)).join(', ');
+          addLine(`⚠ ${data.corporateName} (${data.maskedNumber}): פער ביתרה בתאריכים ${dates} — כנראה תנועה חסרה/כפולה שירדה מהבנק (לא קשור לפריוריטי)`, 'error');
         } else if (event === 'done') {
           panel.classList.add('done');
           document.getElementById('sum-new').textContent = data.totalNewSaved;
@@ -506,6 +509,9 @@ async function syncAllBanks() {
           } else if (event === 'account-saved') {
             const dupNote = data.dedupSkipped > 0 ? ` (${data.dedupSkipped} כפילויות דולגו)` : '';
             addLine(`✓ ${data.corporateName} (${data.maskedNumber}): ${data.newSaved} תנועות חדשות${dupNote}`, 'success');
+          } else if (event === 'balance-check') {
+            const dates = data.mismatches.map(m => fmtDate(m.date)).join(', ');
+            addLine(`⚠ ${data.corporateName} (${data.maskedNumber}): פער ביתרה בתאריכים ${dates} — כנראה תנועה חסרה/כפולה שירדה מהבנק (לא קשור לפריוריטי)`, 'error');
           } else if (event === 'done') {
             totalNew += data.totalNewSaved || 0;
             totalDup += data.totalDedupSkipped || 0;
