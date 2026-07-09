@@ -115,6 +115,23 @@ export function insertCardTransactions(cardId, txns) {
   return insertMany(txns);
 }
 
+/**
+ * Removes rows for a card/billing_date that are no longer part of the bank's
+ * own answer for that cycle — e.g. an entry that was previously mis-included
+ * (see the "not yet finalized" fix in the Discount scraper) needs to actually
+ * disappear on the next sync, not just stop being re-inserted. Only touches
+ * rows for the exact billing_date being synced, so other cycles are untouched.
+ */
+export function deleteStaleCardTransactions(cardId, billingDate, keepBankTransactionIds) {
+  if (!billingDate || keepBankTransactionIds.length === 0) return 0;
+  const placeholders = keepBankTransactionIds.map(() => '?').join(',');
+  const res = db.prepare(`
+    DELETE FROM card_transactions
+    WHERE card_id = ? AND billing_date = ? AND bank_transaction_id NOT IN (${placeholders})
+  `).run(cardId, billingDate, ...keepBankTransactionIds);
+  return res.changes;
+}
+
 export function listCards() {
   return db.prepare(`
     SELECT c.id, c.bank_id, c.account_masked_number, c.card_last4, c.label,

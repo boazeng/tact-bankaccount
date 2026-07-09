@@ -4,7 +4,7 @@ import { requireRole } from '../auth/index.js';
 import { resolveAllCredentialsForBank } from '../secrets/bank-creds.js';
 import { bankRegistry } from '../scrapers/index.js';
 import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/discount.js';
-import { upsertCard, updateCardLastSync, insertCardTransactions, listCards, getCard, getCardTransactions, getPriorityPreviewForCard } from './db.js';
+import { upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions, listCards, getCard, getCardTransactions, getPriorityPreviewForCard } from './db.js';
 
 // Registry of bank card-scrapers implemented so far. Reuses the same
 // bankRegistry entries from src/scrapers/index.js only for credential shape
@@ -83,6 +83,16 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
           label: entry.card.label,
         });
         const newCount = insertCardTransactions(cardId, entry.transactions);
+
+        // Remove rows for this same cycle that the bank no longer reports —
+        // e.g. an entry the scraper previously mis-included and has since
+        // learned to exclude (see the "not yet finalized" fix). Only cleans
+        // up the exact billing_date just synced; other cycles are untouched.
+        const billingDate = entry.transactions[0]?.billingDate;
+        const staleRemoved = deleteStaleCardTransactions(
+          cardId, billingDate, entry.transactions.map(t => t.transactionID),
+        );
+
         updateCardLastSync(cardId);
         totalCards++;
         totalNewTxns += newCount;
@@ -92,6 +102,7 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
           account: entry.account.maskedNumber,
           fetched: entry.transactions.length,
           newSaved: newCount,
+          staleRemoved,
         });
       }
     }

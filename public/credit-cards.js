@@ -206,7 +206,8 @@ async function syncCards(bankId) {
         if (event === 'progress') {
           addLine(data.message || data.step);
         } else if (event === 'card-saved') {
-          addLine(`✓ ${data.account} · כרטיס ${data.cardLast4}: נשמרו ${data.newSaved} תנועות חדשות (מתוך ${data.fetched})`, 'success');
+          const staleNote = data.staleRemoved > 0 ? ` (${data.staleRemoved} תנועות ישנות הוסרו)` : '';
+          addLine(`✓ ${data.account} · כרטיס ${data.cardLast4}: נשמרו ${data.newSaved} תנועות חדשות (מתוך ${data.fetched})${staleNote}`, 'success');
         } else if (event === 'done') {
           panel.classList.add('done');
           addLine(`סיום: ${data.totalCards} כרטיסים, ${data.totalNewTxns} תנועות חדשות`, 'success');
