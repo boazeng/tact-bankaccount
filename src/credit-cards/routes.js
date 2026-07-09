@@ -4,7 +4,12 @@ import { requireRole } from '../auth/index.js';
 import { resolveAllCredentialsForBank } from '../secrets/bank-creds.js';
 import { bankRegistry } from '../scrapers/index.js';
 import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/discount.js';
-import { upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions, listCards, getCard, getCardTransactions, getPriorityPreviewForCard } from './db.js';
+import {
+  upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
+  listCards, getCard, getCardTransactions, getPriorityPreviewForCard,
+  setCardPriorityCashname, isPagePushed, recordPagePushed,
+} from './db.js';
+import { pushCardPageToPriority, priorityConfigured } from './priority-push.js';
 
 // Registry of bank card-scrapers implemented so far. Reuses the same
 // bankRegistry entries from src/scrapers/index.js only for credential shape
@@ -34,6 +39,68 @@ router.get('/api/credit-cards/:cardId/priority-preview', (req, res) => {
   const card = getCard(cardId);
   if (!card) return res.status(404).json({ error: 'Card not found' });
   res.json({ card, pages: getPriorityPreviewForCard(cardId) });
+});
+
+router.put('/api/credit-cards/:cardId/cashname', requireRole('admin'), (req, res) => {
+  const cardId = Number(req.params.cardId);
+  const card = getCard(cardId);
+  if (!card) return res.status(404).json({ error: 'Card not found' });
+  const cashname = (req.body?.cashname || '').trim();
+  if (!cashname) return res.status(400).json({ error: 'cashname חובה' });
+  setCardPriorityCashname(cardId, cashname);
+  res.json({ ok: true });
+});
+
+/**
+ * Pushes every not-yet-pushed page for one card. Skips pages already
+ * recorded in card_priority_pushes (idempotent — safe to call repeatedly).
+ */
+async function pushCardToPriority(card) {
+  const pages = getPriorityPreviewForCard(card.id).filter(p => !p.pushed);
+  const results = [];
+  for (const page of pages) {
+    if (isPagePushed(card.id, page.curdate)) continue; // race guard alongside the .filter above
+    try {
+      const result = await pushCardPageToPriority(card.priority_cashname, page);
+      recordPagePushed(card.id, page.curdate, result);
+      results.push({ curdate: page.curdate, ok: true, ...result });
+    } catch (e) {
+      results.push({ curdate: page.curdate, ok: false, error: e.message });
+    }
+  }
+  return results;
+}
+
+router.post('/api/credit-cards/:cardId/push-to-priority', requireRole('approver'), async (req, res) => {
+  if (!priorityConfigured()) return res.status(500).json({ error: 'פריוריטי לא מוגדר (PRIORITY_URL_REAL/PRIORITY_USERNAME/PRIORITY_PASSWORD)' });
+  const cardId = Number(req.params.cardId);
+  const card = getCard(cardId);
+  if (!card) return res.status(404).json({ error: 'Card not found' });
+  if (!card.priority_cashname) return res.status(400).json({ error: 'לא הוגדר CASHNAME לכרטיס הזה' });
+
+  try {
+    const results = await pushCardToPriority(card);
+    res.json({ results });
+  } catch (e) {
+    console.error('[credit-cards] push-to-priority error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+router.post('/api/credit-cards/push-all-to-priority', requireRole('approver'), async (req, res) => {
+  if (!priorityConfigured()) return res.status(500).json({ error: 'פריוריטי לא מוגדר (PRIORITY_URL_REAL/PRIORITY_USERNAME/PRIORITY_PASSWORD)' });
+
+  const cards = listCards().filter(c => c.priority_cashname);
+  const byCard = [];
+  for (const card of cards) {
+    try {
+      const results = await pushCardToPriority(card);
+      byCard.push({ cardId: card.id, cardLast4: card.card_last4, results });
+    } catch (e) {
+      byCard.push({ cardId: card.id, cardLast4: card.card_last4, error: e.message });
+    }
+  }
+  res.json({ byCard });
 });
 
 router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (req, res) => {

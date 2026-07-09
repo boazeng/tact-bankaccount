@@ -60,12 +60,30 @@ async function loadCards() {
             ${c.last_txn_date ? '· עד ' + escapeHtml(c.last_txn_date) : ''}
           </div>
         </div>
-        <div class="card-txns" style="display:none; padding: 12px 16px;"></div>
+        <div class="card-txns" style="display:none; padding: 12px 16px;">
+          <div class="cashname-row" style="display:flex; gap:8px; align-items:center; margin-bottom:12px;">
+            <label style="font-size:.9rem; color:var(--color-text-light);">קופה בפריוריטי (CASHNAME):</label>
+            <input type="text" class="cashname-input" data-card-id="${c.id}" value="${escapeHtml(c.priority_cashname || '')}" placeholder="לדוגמה: כרטיס-4222" style="max-width:180px;">
+            <button class="btn btn-ghost btn-sm cashname-save-btn" data-card-id="${c.id}">שמור</button>
+            <button class="btn btn-push btn-sm push-priority-btn" data-card-id="${c.id}" ${c.priority_cashname ? '' : 'disabled title="יש להגדיר קופה קודם"'}>↑ קלוט לפריוריטי</button>
+            <span class="cashname-status" data-card-id="${c.id}"></span>
+          </div>
+          <div class="priority-pages"></div>
+        </div>
       </div>
     `).join('');
 
     container.querySelectorAll('.card-item').forEach(item => {
       item.querySelector('.bank-summary-row').addEventListener('click', () => toggleCard(item));
+    });
+    container.querySelectorAll('.cashname-save-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => { e.stopPropagation(); saveCashname(btn.dataset.cardId); });
+    });
+    container.querySelectorAll('.push-priority-btn').forEach(btn => {
+      btn.addEventListener('click', (e) => { e.stopPropagation(); pushCardToPriority(btn.dataset.cardId); });
+    });
+    container.querySelectorAll('.cashname-input').forEach(input => {
+      input.addEventListener('click', (e) => e.stopPropagation());
     });
   } catch (e) {
     container.innerHTML = `<p class="empty" style="padding: 32px; color:var(--color-neg);">שגיאה בטעינת כרטיסים: ${escapeHtml(e.message)}</p>`;
@@ -73,14 +91,18 @@ async function loadCards() {
 }
 
 async function toggleCard(item) {
-  const el = item.querySelector('.card-txns');
-  const isOpen = el.style.display !== 'none';
-  if (isOpen) { el.style.display = 'none'; return; }
+  const wrap = item.querySelector('.card-txns');
+  const isOpen = wrap.style.display !== 'none';
+  if (isOpen) { wrap.style.display = 'none'; return; }
 
-  el.style.display = 'block';
-  if (el.dataset.loaded) return;
-
+  wrap.style.display = 'block';
   const cardId = item.dataset.cardId;
+  await loadPriorityPages(cardId);
+}
+
+async function loadPriorityPages(cardId) {
+  const el = document.querySelector(`.card-item[data-card-id="${cardId}"] .priority-pages`);
+  if (!el) return;
   el.innerHTML = 'טוען תצוגת פריוריטי…';
   try {
     const res = await fetch(`/api/credit-cards/${cardId}/priority-preview`);
@@ -101,9 +123,15 @@ async function toggleCard(item) {
             <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
           </tr>
         `).join('');
+        const pushedBadge = page.pushed
+          ? '<span style="color:var(--color-pos); font-weight:700;">✓ נקלט בפריוריטי</span>'
+          : '<span style="color:var(--color-text-light);">טרם נקלט</span>';
         return `
           <div style="margin-bottom:16px;">
-            <div style="font-weight:700; margin-bottom:6px;">דף בנק ליום ${escapeHtml(page.curdate)}</div>
+            <div style="font-weight:700; margin-bottom:6px; display:flex; gap:10px; align-items:center;">
+              <span>דף בנק ליום ${escapeHtml(page.curdate)}</span>
+              ${pushedBadge}
+            </div>
             <div class="txn-table-wrap">
               <table class="txn-table">
                 <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
@@ -113,9 +141,80 @@ async function toggleCard(item) {
           </div>`;
       }).join('');
     }
-    el.dataset.loaded = '1';
   } catch (e) {
     el.innerHTML = `<p class="empty" style="color:var(--color-neg);">שגיאה: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function saveCashname(cardId) {
+  const input = document.querySelector(`.cashname-input[data-card-id="${cardId}"]`);
+  const status = document.querySelector(`.cashname-status[data-card-id="${cardId}"]`);
+  const cashname = input.value.trim();
+  if (!cashname) { status.textContent = 'יש למלא קופה'; status.style.color = 'var(--color-neg)'; return; }
+  try {
+    const res = await fetch(`/api/credit-cards/${cardId}/cashname`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cashname }),
+    });
+    if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || `HTTP ${res.status}`); }
+    status.textContent = '✓ נשמר';
+    status.style.color = 'var(--color-pos)';
+    document.querySelector(`.push-priority-btn[data-card-id="${cardId}"]`)?.removeAttribute('disabled');
+  } catch (e) {
+    status.textContent = 'שגיאה: ' + e.message;
+    status.style.color = 'var(--color-neg)';
+  }
+}
+
+async function pushCardToPriority(cardId) {
+  const btn = document.querySelector(`.push-priority-btn[data-card-id="${cardId}"]`);
+  const status = document.querySelector(`.cashname-status[data-card-id="${cardId}"]`);
+  btn.disabled = true;
+  status.textContent = 'קולט לפריוריטי…';
+  status.style.color = 'var(--color-text-light)';
+  try {
+    const res = await fetch(`/api/credit-cards/${cardId}/push-to-priority`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const failed = data.results.filter(r => !r.ok);
+    if (data.results.length === 0) {
+      status.textContent = 'אין דפים חדשים לקליטה';
+      status.style.color = 'var(--color-text-light)';
+    } else if (failed.length) {
+      status.textContent = `שגיאה בקליטה: ${failed[0].error}`;
+      status.style.color = 'var(--color-neg)';
+    } else {
+      status.textContent = `✓ נקלטו ${data.results.length} דפים`;
+      status.style.color = 'var(--color-pos)';
+    }
+    await loadPriorityPages(cardId);
+  } catch (e) {
+    status.textContent = 'שגיאה: ' + e.message;
+    status.style.color = 'var(--color-neg)';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function pushAllCardsToPriority() {
+  const btn = document.getElementById('push-all-priority-btn');
+  btn.disabled = true;
+  const origText = btn.textContent;
+  btn.textContent = 'קולט…';
+  try {
+    const res = await fetch('/api/credit-cards/push-all-to-priority', { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    const totalPushed = data.byCard.reduce((sum, c) => sum + (c.results?.filter(r => r.ok).length || 0), 0);
+    const totalFailed = data.byCard.reduce((sum, c) => sum + (c.results?.filter(r => !r.ok).length || 0), 0);
+    alert(`נקלטו ${totalPushed} דפים${totalFailed ? `, ${totalFailed} נכשלו` : ''}`);
+    loadCards();
+  } catch (e) {
+    alert('שגיאה: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = origText;
   }
 }
 
@@ -183,6 +282,7 @@ async function syncCards(bankId) {
 }
 
 document.getElementById('sync-discount-btn').addEventListener('click', () => syncCards('discount'));
+document.getElementById('push-all-priority-btn').addEventListener('click', pushAllCardsToPriority);
 
 renderUserChip();
 loadCards();

@@ -40,7 +40,25 @@ db.exec(`
     UNIQUE(card_id, bank_transaction_id)
   );
   CREATE INDEX IF NOT EXISTS idx_card_txn_card_date ON card_transactions(card_id, purchase_date DESC);
+
+  -- One row per (card, billing_date) page actually pushed to Priority — the
+  -- idempotency guard for push-to-priority (a page must never be created twice).
+  CREATE TABLE IF NOT EXISTS card_priority_pushes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    card_id       INTEGER NOT NULL REFERENCES credit_cards(id) ON DELETE CASCADE,
+    billing_date  TEXT NOT NULL,
+    bpyear        TEXT,
+    cash          TEXT,
+    bpnum         TEXT,
+    pushed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(card_id, billing_date)
+  );
 `);
+
+const cardCols = db.prepare(`PRAGMA table_info(credit_cards)`).all().map(c => c.name);
+if (!cardCols.includes('priority_cashname')) {
+  db.exec(`ALTER TABLE credit_cards ADD COLUMN priority_cashname TEXT`);
+}
 
 const stmtUpsertCard = db.prepare(`
   INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label)
@@ -135,12 +153,17 @@ export function deleteStaleCardTransactions(cardId, billingDate, keepBankTransac
 export function listCards() {
   return db.prepare(`
     SELECT c.id, c.bank_id, c.account_masked_number, c.card_last4, c.label,
-           c.is_active, c.last_sync_at,
+           c.is_active, c.last_sync_at, c.priority_cashname,
            (SELECT COUNT(*) FROM card_transactions t WHERE t.card_id = c.id) AS txn_count,
            (SELECT MAX(purchase_date) FROM card_transactions t WHERE t.card_id = c.id) AS last_txn_date
     FROM credit_cards c
     ORDER BY c.bank_id, c.card_last4
   `).all();
+}
+
+const stmtSetCashname = db.prepare(`UPDATE credit_cards SET priority_cashname = ? WHERE id = ?`);
+export function setCardPriorityCashname(cardId, cashname) {
+  stmtSetCashname.run(cashname ?? null, cardId);
 }
 
 export function getCard(cardId) {
@@ -176,6 +199,10 @@ export function getPriorityPreviewForCard(cardId) {
     WHERE card_id = ?
     ORDER BY purchase_date, id
   `).all(cardId);
+  const pushedDates = new Set(
+    db.prepare(`SELECT billing_date FROM card_priority_pushes WHERE card_id = ?`).all(cardId)
+      .map(r => r.billing_date),
+  );
 
   const counts = new Map();
   for (const t of txns) {
@@ -217,9 +244,24 @@ export function getPriorityPreviewForCard(cardId) {
       debit: 0,
       credit: Math.round(netTotal * 100) / 100,
     });
-    pages.push({ curdate, lines });
+    pages.push({ curdate, lines, pushed: pushedDates.has(curdate) });
   }
   return pages.sort((a, b) => a.curdate < b.curdate ? -1 : 1);
+}
+
+const stmtIsPushed = db.prepare(
+  `SELECT 1 FROM card_priority_pushes WHERE card_id = ? AND billing_date = ?`,
+);
+export function isPagePushed(cardId, billingDate) {
+  return !!stmtIsPushed.get(cardId, billingDate);
+}
+
+const stmtRecordPush = db.prepare(`
+  INSERT INTO card_priority_pushes (card_id, billing_date, bpyear, cash, bpnum)
+  VALUES (@card_id, @billing_date, @bpyear, @cash, @bpnum)
+`);
+export function recordPagePushed(cardId, billingDate, { bpyear, cash, bpnum }) {
+  stmtRecordPush.run({ card_id: cardId, billing_date: billingDate, bpyear, cash: String(cash), bpnum: String(bpnum) });
 }
 
 export default db;
