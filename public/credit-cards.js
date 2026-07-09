@@ -104,11 +104,59 @@ async function toggleCard(item) {
             <thead><tr><th>תאריך רכישה</th><th>בית עסק</th><th>תשלומים</th><th>סכום</th></tr></thead>
             <tbody>${rows}</tbody>
           </table>
-        </div>`;
+        </div>
+        <button class="btn btn-ghost btn-sm" style="margin-top:12px;" id="priority-preview-btn-${cardId}">📄 תצוגת פריוריטי</button>
+        <div class="priority-preview" id="priority-preview-${cardId}" style="display:none; margin-top:12px;"></div>`;
+      document.getElementById(`priority-preview-btn-${cardId}`).addEventListener('click', () => togglePriorityPreview(cardId));
     }
     txnsEl.dataset.loaded = '1';
   } catch (e) {
     txnsEl.innerHTML = `<p class="empty" style="color:var(--color-neg);">שגיאה: ${escapeHtml(e.message)}</p>`;
+  }
+}
+
+async function togglePriorityPreview(cardId) {
+  const el = document.getElementById(`priority-preview-${cardId}`);
+  const isOpen = el.style.display !== 'none';
+  if (isOpen) { el.style.display = 'none'; return; }
+
+  el.style.display = 'block';
+  if (el.dataset.loaded) return;
+
+  el.innerHTML = 'טוען תצוגת פריוריטי…';
+  try {
+    const res = await fetch(`/api/credit-cards/${cardId}/priority-preview`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const { pages } = await res.json();
+
+    if (!pages.length) {
+      el.innerHTML = `<p class="empty">אין נתונים.</p>`;
+    } else {
+      el.innerHTML = pages.map(page => {
+        const rows = page.lines.map(l => `
+          <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
+            <td>${escapeHtml(l.curdate)}</td>
+            <td>${escapeHtml(l.btcode)}</td>
+            <td>${escapeHtml(l.details)}</td>
+            <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
+            <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
+          </tr>
+        `).join('');
+        return `
+          <div style="margin-bottom:16px;">
+            <div style="font-weight:700; margin-bottom:6px;">דף בנק ליום ${escapeHtml(page.curdate)}</div>
+            <div class="txn-table-wrap">
+              <table class="txn-table">
+                <thead><tr><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>`;
+      }).join('');
+    }
+    el.dataset.loaded = '1';
+  } catch (e) {
+    el.innerHTML = `<p class="empty" style="color:var(--color-neg);">שגיאה: ${escapeHtml(e.message)}</p>`;
   }
 }
 

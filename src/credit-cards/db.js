@@ -134,4 +134,62 @@ export function getCardTransactions(cardId, { limit = 200, offset = 0 } = {}) {
   `).all(cardId, limit, offset);
 }
 
+/**
+ * Priority-shaped preview (BANKPAGES/BANKLINES layout) for a card's
+ * transactions, grouped into one "page" per bank debit date: one DEBIT line
+ * per purchase, plus a closing CREDIT line ("תשלום בפועל בבנק") equal to the
+ * page's total, so the page nets to the single real bank debit. Not pushed
+ * to Priority yet — preview only, per plan.
+ *
+ * Some rows come back from the bank without billing_date populated yet; those
+ * are folded into the cycle's most common non-null billing_date rather than
+ * being dropped or shown as their own stray group.
+ */
+export function getPriorityPreviewForCard(cardId) {
+  const txns = db.prepare(`
+    SELECT bank_transaction_id, purchase_date, billing_date, merchant_name, amount
+    FROM card_transactions
+    WHERE card_id = ?
+    ORDER BY purchase_date, id
+  `).all(cardId);
+
+  const counts = new Map();
+  for (const t of txns) {
+    if (t.billing_date) counts.set(t.billing_date, (counts.get(t.billing_date) || 0) + 1);
+  }
+  let modeBillingDate = null;
+  let modeCount = 0;
+  for (const [date, count] of counts) {
+    if (count > modeCount) { modeBillingDate = date; modeCount = count; }
+  }
+
+  const groups = new Map();
+  for (const t of txns) {
+    const date = t.billing_date || modeBillingDate || 'לא ידוע';
+    if (!groups.has(date)) groups.set(date, []);
+    groups.get(date).push(t);
+  }
+
+  const pages = [];
+  for (const [curdate, group] of groups) {
+    const lines = group.map(t => ({
+      curdate,
+      btcode: '00',
+      details: (t.merchant_name || '').slice(0, 24),
+      debit: Math.abs(Number(t.amount)),
+      credit: 0,
+    }));
+    const total = group.reduce((sum, t) => sum + Math.abs(Number(t.amount)), 0);
+    lines.push({
+      curdate,
+      btcode: '00',
+      details: 'תשלום בפועל בבנק',
+      debit: 0,
+      credit: Math.round(total * 100) / 100,
+    });
+    pages.push({ curdate, lines });
+  }
+  return pages.sort((a, b) => a.curdate < b.curdate ? -1 : 1);
+}
+
 export default db;

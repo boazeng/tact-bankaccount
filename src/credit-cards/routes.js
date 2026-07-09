@@ -4,7 +4,7 @@ import { requireRole } from '../auth/index.js';
 import { resolveAllCredentialsForBank } from '../secrets/bank-creds.js';
 import { bankRegistry } from '../scrapers/index.js';
 import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/discount.js';
-import { upsertCard, updateCardLastSync, insertCardTransactions, listCards, getCard, getCardTransactions } from './db.js';
+import { upsertCard, updateCardLastSync, insertCardTransactions, listCards, getCard, getCardTransactions, getPriorityPreviewForCard } from './db.js';
 
 // Registry of bank card-scrapers implemented so far. Reuses the same
 // bankRegistry entries from src/scrapers/index.js only for credential shape
@@ -27,6 +27,13 @@ router.get('/api/credit-cards/:cardId/transactions', (req, res) => {
   const offset = Number(req.query.offset) || 0;
   const transactions = getCardTransactions(cardId, { limit, offset });
   res.json({ card, transactions });
+});
+
+router.get('/api/credit-cards/:cardId/priority-preview', (req, res) => {
+  const cardId = Number(req.params.cardId);
+  const card = getCard(cardId);
+  if (!card) return res.status(404).json({ error: 'Card not found' });
+  res.json({ card, pages: getPriorityPreviewForCard(cardId) });
 });
 
 router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (req, res) => {
