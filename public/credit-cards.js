@@ -185,7 +185,12 @@ async function pushCardToPriority(cardId) {
       status.textContent = `שגיאה בקליטה: ${failed[0].error}`;
       status.style.color = 'var(--color-neg)';
     } else {
-      status.textContent = `✓ נקלטו ${data.results.length} דפים`;
+      const existed = data.results.filter(r => r.alreadyExisted).length;
+      const created = data.results.length - existed;
+      const parts = [];
+      if (created) parts.push(`${created} דפים חדשים נקלטו`);
+      if (existed) parts.push(`${existed} כבר היו קיימים בפריוריטי (לא נוצרו כפולים)`);
+      status.textContent = '✓ ' + parts.join(', ');
       status.style.color = 'var(--color-pos)';
     }
     await loadPriorityPages(cardId);

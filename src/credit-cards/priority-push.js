@@ -45,11 +45,35 @@ async function nextRunningPageNumber(cashName, year) {
 }
 
 /**
+ * Checks Priority itself for an existing page on this exact CASHNAME+date —
+ * not just our own local card_priority_pushes tracking, which can drift out
+ * of sync with reality (e.g. a page pushed through some other route, or a
+ * page manually deleted in Priority after our local table already recorded
+ * it). Returns { BPYEAR, CASH, BPNUM } if one exists, or null.
+ */
+export async function findExistingCardPage(cashName, curdate) {
+  // Range comparison, not eq — matches the proven pattern already used
+  // against this same Priority instance in src/priority/check.js.
+  const params = new URLSearchParams({
+    '$filter': `CASHNAME eq '${cashName}' and CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
+    '$select': 'BPYEAR,CASH,BPNUM',
+    '$top': '1',
+  });
+  const r = await fetch(`${PRIORITY_URL}/BANKPAGES?${params}`, { headers: getHeaders });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`BANKPAGES existence check failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  if (!data.value?.length) return null;
+  const { BPYEAR, CASH, BPNUM } = data.value[0];
+  return { BPYEAR, CASH, BPNUM };
+}
+
+/**
  * Creates a new BANKPAGES record for this card's billing-cycle page.
- * Returns { BPYEAR, CASH, BPNUM }. Callers must check isPagePushed() first —
- * this always creates a new page, it never looks for an existing one (unlike
- * the daily bank pages, a card's monthly page is only ever created once,
- * guarded by card_priority_pushes in src/credit-cards/db.js).
+ * Returns { BPYEAR, CASH, BPNUM }. Callers must check findExistingCardPage()
+ * first — this always creates a new page, it never looks for an existing one.
  */
 async function createCardBankPage(cashName, curdate) {
   const year = curdate.slice(0, 4);
@@ -90,13 +114,20 @@ function buildCardLinePayload(line) {
 
 /**
  * Pushes one card's billing-cycle page (from getPriorityPreviewForCard) to
- * Priority: creates the BANKPAGES record, then posts each line to
- * BANKLINES_SUBFORM. Returns { bpyear, cash, bpnum, pushed, failed }.
- * Caller is responsible for the idempotency check (isPagePushed) and for
- * recording the result (recordPagePushed) — this function only talks to
- * Priority, it doesn't touch our own DB.
+ * Priority: checks Priority itself for an existing page on this CASHNAME+date
+ * first (see findExistingCardPage — this is the real duplicate guard, not
+ * just our local tracking table), and only creates a new BANKPAGES record
+ * and posts lines if none exists yet. Returns
+ * { bpyear, cash, bpnum, pushed, failed, alreadyExisted }.
+ * Caller is responsible for recording the result (recordPagePushed) — this
+ * function only talks to Priority, it doesn't touch our own DB.
  */
 export async function pushCardPageToPriority(cashName, page) {
+  const existing = await findExistingCardPage(cashName, page.curdate);
+  if (existing) {
+    return { bpyear: existing.BPYEAR, cash: existing.CASH, bpnum: existing.BPNUM, pushed: [], failed: [], alreadyExisted: true };
+  }
+
   const bankPage = await createCardBankPage(cashName, page.curdate);
   const url = `${PRIORITY_URL}/${bankPageNavPath(bankPage)}`;
 
@@ -125,7 +156,7 @@ export async function pushCardPageToPriority(cashName, page) {
     }
   }
 
-  return { bpyear: bankPage.BPYEAR, cash: bankPage.CASH, bpnum: bankPage.BPNUM, pushed, failed };
+  return { bpyear: bankPage.BPYEAR, cash: bankPage.CASH, bpnum: bankPage.BPNUM, pushed, failed, alreadyExisted: false };
 }
 
 export function priorityConfigured() {
