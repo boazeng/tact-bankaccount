@@ -132,8 +132,6 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
         continue;
       }
 
-      const targetMonth = previousMonthMMYYYY();
-
       for (const card of cards) {
         const cardParams = {
           CardNumber: card.CardNumber,
@@ -145,6 +143,18 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
         // transaction's own DebitDate, which is often blank (e.g. standing
         // orders not yet processed at capture time).
         const cycleBillingDate = ymdToIso(card.DateOfPastDebit) || null;
+
+        // Cards bill on different days of the month (confirmed live: one
+        // card's cycle closes on the 2nd, another's on the 15th). Deriving
+        // "last month" from today's date assumes every card shares one
+        // billing day — wrong whenever a card's cycle closes earlier in the
+        // month than today's date, since that cycle has already closed THIS
+        // calendar month. Derive the target month from this card's own
+        // DateOfPastDebit instead, so each card gets its own actually-latest
+        // closed cycle.
+        const targetMonth = card.DateOfPastDebit
+          ? card.DateOfPastDebit.slice(4, 6) + card.DateOfPastDebit.slice(0, 4)
+          : previousMonthMMYYYY();
 
         const txnResp = await page.evaluate(async (accNum, month, params, tplHeaders) => {
           const qs = new URLSearchParams(params).toString();
