@@ -19,7 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
-  getEndOfDayBalance,
+  getEndOfDayBalance, getFirstTransactionDate, getTransactionDatesInRange,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
 
@@ -54,7 +54,7 @@ async function pushBalancesToFlow() {
   if (!res.ok) throw new Error(`flow responded ${res.status}`);
   console.log('[flow-push] balances pushed:', payload);
 }
-import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages, fetchPriorityLines, shiftDate } from './priority/check.js';
+import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages, fetchPriorityLines, shiftDate, findLastLoadedPage, pickBalanceField } from './priority/check.js';
 import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
 import {
@@ -66,6 +66,7 @@ import {
   bootstrapFromEnvIfEmpty as bootstrapBankCredsFromEnv,
 } from './secrets/bank-creds.js';
 import { vaultConfigured } from './secrets/vault.js';
+import creditCardsRouter from './credit-cards/routes.js';
 
 // In-memory map of in-flight scraper sessions waiting on user input (SMS code, etc.).
 const pendingInputs = new Map();
@@ -97,6 +98,7 @@ installAuth(app, {
 });
 
 app.use(express.static(path.resolve('public')));
+app.use(creditCardsRouter);
 
 app.get('/api/banks', (req, res) => {
   const dbBanks = listBanksWithAccounts();
@@ -554,8 +556,22 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
     // Step 2: collect transactions not found in Priority and not yet pushed
     const missing = getTransactionsForPush(accountId);
 
+    // Step 2.5: never auto-push a transaction dated before the most recent BANKPAGES
+    // already loaded in Priority — a "missing" match there almost always means it was
+    // entered manually under a different reference number, not that it's truly absent.
+    // Pushing it anyway creates a duplicate (see the 2026-06-21 check-deposit incident).
+    let minPushDate = null;
+    try {
+      const lastPage = await findLastLoadedPage(acc.priority_cashname);
+      if (lastPage) minPushDate = (lastPage.CURDATE || '').slice(0, 10);
+    } catch (e) {
+      console.warn('[push-to-priority] findLastLoadedPage failed, skipping old-date guard:', e.message);
+    }
+    const toPush = minPushDate ? missing.filter(t => t.date >= minPushDate) : missing;
+    const skippedOld = minPushDate ? missing.filter(t => t.date < minPushDate) : [];
+
     if (isPreview) {
-      const lines = missing.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.bank_id) }));
+      const lines = toPush.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.bank_id) }));
       return res.json({
         ok: true,
         dryRun: true,
@@ -563,22 +579,24 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
         cashName: acc.priority_cashname,
         checked: checkResult.ourTxnsChecked,
         matched: checkResult.matched,
-        missing: missing.length,
+        missing: toPush.length,
         preview: lines.slice(0, 50),
         previewTotal: lines.length,
         bankBalance: acc.last_balance,
         dateRange: checkResult.dateRange,
         fenceDate: checkResult.fenceDate || null,
         balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
+        minPushDate,
+        skippedOld: skippedOld.map(t => ({ id: t.id, date: t.date, amount: t.amount })),
       });
     }
 
     // Step 3: push missing transactions to Priority
-    const { pushed, failed } = await pushToPriority(missing, acc.priority_cashname, acc.bank_id);
+    const { pushed, failed } = await pushToPriority(toPush, acc.priority_cashname, acc.bank_id);
     if (pushed.length > 0) markTransactionsPushed(pushed);
 
     const pushedSet = new Set(pushed);
-    const pushedLines = missing
+    const pushedLines = toPush
       .filter(t => pushedSet.has(t.id))
       .map(t => buildBankLinePayload(t, acc.bank_id));
 
@@ -599,6 +617,8 @@ app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (r
       dateRange: checkResult.dateRange,
       fenceDate: checkResult.fenceDate || null,
       balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
+      minPushDate,
+      skippedOld: skippedOld.map(t => ({ id: t.id, date: t.date, amount: t.amount })),
     });
   } catch (e) {
     console.error('Push to Priority error:', e);
@@ -666,6 +686,142 @@ app.post('/api/accounts/:id/force-push-date', requireRole('approver'), async (re
     });
   } catch (e) {
     console.error('force-push-date error:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Deterministic day-by-day reconciliation, separate from push-to-priority's fuzzy
+// amount/day matching. Anchors on the last BANKPAGES already loaded in Priority by
+// comparing its OPENING balance (unaffected by that day's own line-entry errors)
+// against our balance just before that date. Only once that anchor is confirmed
+// does it push subsequent days one at a time, verifying each day's closing balance
+// before moving to the next — stopping at the first push failure or balance mismatch
+// rather than pushing blindly ahead.
+// POST /api/accounts/:id/reconcile-priority?preview=true
+app.post('/api/accounts/:id/reconcile-priority', requireRole('approver'), async (req, res) => {
+  const accountId = Number(req.params.id);
+  const isPreview = req.query.preview === 'true';
+  let acc = getAccount(accountId);
+  if (!acc) return res.status(404).json({ error: 'Account not found' });
+  if (!priorityConfigured()) {
+    return res.status(500).json({ error: 'Priority not configured in env' });
+  }
+  if (!acc.priority_cashname) {
+    try {
+      const cashBanks = await fetchCashBanks();
+      const discovered = matchCashnameToAccount(acc, cashBanks);
+      if (discovered) {
+        setAccountPriorityCashname(accountId, discovered);
+        acc = { ...acc, priority_cashname: discovered };
+      }
+    } catch {}
+    if (!acc.priority_cashname) {
+      return res.status(400).json({ error: 'לא הוגדר שם קופה בפריוריטי לחשבון זה' });
+    }
+  }
+
+  const cashName = acc.priority_cashname;
+  try {
+    // ── Step 1: anchor on the last BANKPAGES already loaded ──────────────
+    let anchor;
+    let fromDate;
+    const lastPage = await findLastLoadedPage(cashName);
+    if (!lastPage) {
+      fromDate = getFirstTransactionDate(accountId);
+      anchor = { skipped: true, reason: 'no BANKPAGES found for this cashName yet' };
+      if (!fromDate) {
+        return res.json({ ok: true, cashName, anchor, results: [], message: 'אין תנועות מקומיות לקליטה' });
+      }
+    } else {
+      const lastLoadedDate = (lastPage.CURDATE || '').slice(0, 10);
+      const openField = pickBalanceField(lastPage, 'open');
+      if (!openField) {
+        return res.json({
+          ok: false, cashName, stage: 'anchor-field-missing', lastLoadedDate,
+          availableFields: Object.keys(lastPage).filter(k => !k.startsWith('@')),
+        });
+      }
+      const prevDate = shiftDate(lastLoadedDate, -1);
+      const ourPrevBal = getEndOfDayBalance(accountId, prevDate);
+      if (!ourPrevBal) {
+        return res.json({ ok: false, cashName, stage: 'anchor-no-local-data', lastLoadedDate, prevDate });
+      }
+      const priorityOpenBalance = Number(lastPage[openField]);
+      const ourBalance = ourPrevBal.running_balance;
+      const diff = Math.abs(priorityOpenBalance - ourBalance);
+      if (diff >= 0.01) {
+        return res.json({
+          ok: false, cashName, stage: 'anchor-mismatch', lastLoadedDate, prevDate,
+          priorityOpenBalance, ourBalance, diff,
+        });
+      }
+      anchor = { skipped: false, lastLoadedDate, priorityOpenBalance, ourBalance, matched: true };
+      fromDate = shiftDate(lastLoadedDate, 1);
+    }
+
+    // ── Step 2: determine which local dates need pushing (today is never pushed) ─
+    const toDate = shiftDate(new Date().toISOString().slice(0, 10), -1);
+    const dates = fromDate <= toDate ? getTransactionDatesInRange(accountId, fromDate, toDate) : [];
+    if (!dates.length) {
+      return res.json({ ok: true, cashName, anchor, results: [], message: 'הכל עדכני — אין ימים חדשים לקליטה' });
+    }
+
+    // ── Step 3: push day-by-day, verifying closing balance before advancing ──
+    const results = [];
+    let stoppedAt = null;
+    let stoppedReason = null;
+    for (const date of dates) {
+      const txns = getTransactionsForDate(accountId, date);
+
+      if (isPreview) {
+        results.push({ date, total: txns.length, preview: txns.map(t => buildBankLinePayload(t, acc.bank_id)) });
+        continue;
+      }
+
+      const { pushed, failed } = await pushToPriority(txns, cashName, acc.bank_id);
+      if (pushed.length > 0) markTransactionsPushed(pushed);
+
+      let balanceCheck = null;
+      try {
+        const pages = await fetchBankPages(date, date, cashName);
+        if (pages.length > 0) {
+          const closeField = pickBalanceField(pages[0], 'close');
+          const ourBalRow = getEndOfDayBalance(accountId, date);
+          if (closeField && ourBalRow) {
+            const priorityBalance = Number(pages[0][closeField]);
+            const ourBalance = ourBalRow.running_balance;
+            const diff = Math.abs(priorityBalance - ourBalance);
+            balanceCheck = { ourBalance, priorityBalance, diff, match: diff < 0.01 };
+          } else {
+            balanceCheck = { error: !closeField ? 'לא נמצא שדה יתרת סגירה' : 'אין יתרה מקומית לתאריך זה' };
+          }
+        } else {
+          balanceCheck = { error: 'BANKPAGES לא נמצא עבור תאריך זה בפריוריטי' };
+        }
+      } catch (e) {
+        balanceCheck = { error: e.message };
+      }
+
+      results.push({
+        date, total: txns.length, pushed: pushed.length, failed: failed.length,
+        failedDetails: failed.slice(0, 10), balanceCheck,
+      });
+
+      if (failed.length > 0) {
+        stoppedAt = date;
+        stoppedReason = 'push-failed';
+        break;
+      }
+      if (balanceCheck?.match === false || balanceCheck?.error) {
+        stoppedAt = date;
+        stoppedReason = balanceCheck.error ? 'balance-unverified' : 'balance-mismatch';
+        break;
+      }
+    }
+
+    res.json({ ok: !stoppedAt, dryRun: isPreview, cashName, anchor, results, stoppedAt, stoppedReason });
+  } catch (e) {
+    console.error('reconcile-priority error:', e);
     res.status(500).json({ error: e.message });
   }
 });

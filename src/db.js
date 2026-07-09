@@ -489,6 +489,21 @@ export function getEndOfDayBalance(accountId, date) {
   `).get(accountId, date);
 }
 
+export function getFirstTransactionDate(accountId) {
+  const row = db.prepare(`
+    SELECT MIN(date) AS date FROM transactions WHERE account_id = ?
+  `).get(accountId);
+  return row?.date || null;
+}
+
+export function getTransactionDatesInRange(accountId, fromDate, toDate) {
+  return db.prepare(`
+    SELECT DISTINCT date FROM transactions
+    WHERE account_id = ? AND date >= ? AND date <= ?
+    ORDER BY date
+  `).all(accountId, fromDate, toDate).map(r => r.date);
+}
+
 export function getTransactionsForDate(accountId, date) {
   return db.prepare(`
     SELECT id, date, description, extended_description, beneficiary_name,

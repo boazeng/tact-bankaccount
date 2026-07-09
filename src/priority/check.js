@@ -332,6 +332,40 @@ export function matchCashnameToAccount(account, cashBanks) {
 }
 
 /**
+ * Fetch the most recently loaded BANKPAGES record for a cashName (max CURDATE).
+ * No $select — returns all fields so callers can discover available balance fields.
+ * Returns null if the cashName has no BANKPAGES yet.
+ */
+export async function findLastLoadedPage(cashName) {
+  if (!priorityConfigured()) throw new Error('Priority not configured');
+  const params = new URLSearchParams({
+    '$filter': `CASHNAME eq '${cashName}'`,
+    '$orderby': 'CURDATE desc',
+    '$top': '1',
+  });
+  const url = `${PRIORITY_URL}/BANKPAGES?${params}`;
+  const r = await fetch(url, { headers });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`Priority BANKPAGES lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value?.[0] || null;
+}
+
+/**
+ * Locate a specific balance field (opening or closing) on a raw BANKPAGES record.
+ * kind: 'open' | 'close'. Returns the field name, or null if no field matches
+ * that kind unambiguously — deliberately does NOT fall back across kinds, since
+ * guessing the wrong field would silently compare the wrong balances.
+ */
+export function pickBalanceField(sample, kind) {
+  const candidates = Object.keys(sample || {}).filter(k => /BAL/i.test(k) && sample[k] != null);
+  const pattern = kind === 'open' ? /OP|OPEN|START/i : /CLS|CLOSE|END/i;
+  return candidates.find(k => pattern.test(k)) || null;
+}
+
+/**
  * Fetch BANKPAGES records for a cashName in [fromDate, toDate].
  * No $select — returns all fields so callers can discover available balance fields.
  */

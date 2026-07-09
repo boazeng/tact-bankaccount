@@ -808,6 +808,11 @@ async function renderAccountPage() {
           ${!account.priority_cashname ? 'disabled title="לחץ קלוט בדף הראשי לזיהוי אוטומטי"' : ''}>
           ↑ קלוט בפריוריטי
         </button>
+        <button class="btn btn-ghost btn-sm" id="reconcile-priority-btn"
+          ${!account.priority_cashname ? 'disabled' : ''}
+          title="עוגן לפי יתרת פתיחה של הדף האחרון בפריוריטי, ואז קליטה יום-יום עם אימות יתרה — עוצר בכשל ראשון">
+          🔗 התאמה מלאה
+        </button>
       </div>
       <div id="priority-push-result"></div>
       <div class="txn-table-wrap">
@@ -836,6 +841,7 @@ async function renderAccountPage() {
     document.getElementById('preview-priority-btn').addEventListener('click', () => runPriorityPreview(id));
     document.getElementById('force-push-date-btn').addEventListener('click', () => runForcePushDate(id));
     document.getElementById('push-priority-btn').addEventListener('click', () => runPriorityPush(id));
+    document.getElementById('reconcile-priority-btn').addEventListener('click', () => runReconcilePriority(id));
     document.getElementById('save-cashname-btn')?.addEventListener('click', () => savePriorityCashname(id));
     document.querySelector('.txn-table')?.addEventListener('click', async (e) => {
       const btn = e.target.closest('.btn-del-txn');
@@ -1014,6 +1020,7 @@ async function runPriorityPreview(id) {
     if (data.missing === 0) {
       resultEl.innerHTML = `<div class="push-result-card push-all-ok">
         ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
+        ${renderSkippedOldNote(data)}
       </div>`;
       resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
       return;
@@ -1053,6 +1060,7 @@ async function runPriorityPreview(id) {
         </table>
       </div>
       ${moreNote}
+      ${renderSkippedOldNote(data)}
       <div class="push-dry-run-note">👁 תצוגה מקדימה בלבד — לחץ "קלוט בפריוריטי" לשליחה</div>
     </div>`;
     resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1104,6 +1112,7 @@ async function runPriorityPush(id) {
     if (data.pushed === 0 && data.failed === 0) {
       resultEl.innerHTML = `<div class="push-result-card push-all-ok">
            ✓ כל ${data.matched} התנועות כבר קיימות בפריוריטי — אין מה לקלוט
+           ${renderSkippedOldNote(data)}
          </div>`;
     } else {
       resultEl.innerHTML = `<div class="push-result-card">
@@ -1135,6 +1144,7 @@ async function runPriorityPush(id) {
            </div>
            ${moreNote}` : ''}
            ${failedList ? `<div class="push-preview-label">שגיאות:</div><div class="push-fail-list">${failedList}</div>` : ''}
+           ${renderSkippedOldNote(data)}
          </div>`;
     }
 
@@ -1144,6 +1154,122 @@ async function runPriorityPush(id) {
     btn.textContent = origText;
   } finally {
     btn.disabled = false;
+  }
+}
+
+function renderSkippedOldNote(data) {
+  if (!data.skippedOld?.length) return '';
+  const items = data.skippedOld.map(t =>
+    `<div class="push-fail-item">• ${fmtDate(t.date)} · ${fmtMoney(t.amount)} (תנועה ${t.id})</div>`
+  ).join('');
+  return `<div class="push-result-card" style="border-color:var(--color-warn); margin-top:8px;">
+    ⚠ <strong>${data.skippedOld.length} תנועות ישנות לא נשלחו</strong> — מתאריך לפני ${fmtDate(data.minPushDate)}
+    (הדף האחרון שכבר נטען לפריוריטי). כנראה נקלטו ידנית בפריוריטי עם אסמכתא שונה.
+    יש לבדוק ידנית ולא לקלוט אוטומטית:
+    <div class="push-fail-list">${items}</div>
+  </div>`;
+}
+
+function renderReconcileAnchor(anchor) {
+  if (!anchor) return '';
+  if (anchor.skipped) {
+    return `<div class="push-stat">⚠ אין דף קודם בפריוריטי לקופה זו — מתחילים מהתנועה המקומית הראשונה</div>`;
+  }
+  return `<div class="push-stat">✓ עוגן תואם ב-${fmtDate(anchor.lastLoadedDate)}
+    (יתרת פתיחה ${fmtMoney(anchor.priorityOpenBalance)} = יתרתנו ${fmtMoney(anchor.ourBalance)})</div>`;
+}
+
+function renderReconcileAnchorFailure(data) {
+  const stageText = {
+    'anchor-field-missing': `לא נמצא שדה "יתרת פתיחה" מזוהה בדף האחרון (${fmtDate(data.lastLoadedDate)}) בפריוריטי`,
+    'anchor-no-local-data': `אין יתרה מקומית לתאריך ${fmtDate(data.prevDate)} (היום שלפני הדף האחרון) — אי אפשר לאמת עוגן`,
+    'anchor-mismatch': `יתרת הפתיחה בפריוריטי ל-${fmtDate(data.lastLoadedDate)} (${fmtMoney(data.priorityOpenBalance)}) לא תואמת ליתרתנו ל-${fmtDate(data.prevDate)} (${fmtMoney(data.ourBalance)}) — הפרש ${fmtMoney(data.diff)}`,
+  };
+  const detail = stageText[data.stage] || data.stage;
+  return `<div class="push-result-card" style="border-color:var(--color-neg)">
+    ✗ <strong>העוגן לא אומת — לא נקלט דבר</strong><br>${escapeHtml(detail)}
+    ${data.availableFields ? `<br><small>שדות זמינים: ${escapeHtml(data.availableFields.join(', '))}</small>` : ''}
+  </div>`;
+}
+
+function renderReconcileDayRow(r) {
+  const bc = r.balanceCheck;
+  let balHtml = '<span class="balance-box"></span>';
+  if (bc?.error) {
+    balHtml = `<span class="balance-box" title="${escapeHtml(bc.error)}">⚠</span>`;
+  } else if (bc && bc.match) {
+    balHtml = `<span class="balance-box yes" title="יתרה תואמת">✓</span>`;
+  } else if (bc && bc.match === false) {
+    balHtml = `<span class="balance-box no" title="סטייה: ₪${bc.diff.toFixed(2)}">✗</span>`;
+  }
+  return `<tr>
+    <td class="date">${fmtDate(r.date)}</td>
+    <td class="num">${r.total}</td>
+    <td class="num">${r.pushed ?? '—'}</td>
+    <td class="num">${r.failed > 0 ? `<span class="num red">${r.failed}</span>` : '0'}</td>
+    <td style="text-align:center;">${balHtml}</td>
+  </tr>`;
+}
+
+async function runReconcilePriority(id) {
+  if (!confirm('להריץ התאמה מלאה מול פריוריטי?\nיאמת עוגן לפי יתרת פתיחה של הדף האחרון, ואז יקלוט ימים חדשים אחד-אחד עם אימות יתרה — ויעצור בכשל ראשון.')) return;
+
+  const btn = document.getElementById('reconcile-priority-btn');
+  const resultEl = document.getElementById('priority-push-result');
+  btn.disabled = true;
+  btn.textContent = '⏳ מתאים...';
+  resultEl.innerHTML = '';
+
+  try {
+    const r = await fetch(`/api/accounts/${id}/reconcile-priority`, { method: 'POST' });
+    const data = await r.json();
+    if (!r.ok) {
+      resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ שגיאה: ${escapeHtml(data.error || String(r.status))}</div>`;
+      return;
+    }
+
+    if (data.stage) {
+      resultEl.innerHTML = renderReconcileAnchorFailure(data);
+      return;
+    }
+
+    if (!data.results?.length) {
+      resultEl.innerHTML = `<div class="push-result-card push-all-ok">
+        ${renderReconcileAnchor(data.anchor)}
+        ${escapeHtml(data.message || 'אין ימים חדשים לקליטה')}
+      </div>`;
+      return;
+    }
+
+    const rows = data.results.map(renderReconcileDayRow).join('');
+    const stopNote = data.stoppedAt
+      ? `<div class="push-result-card" style="border-color:var(--color-neg); margin-top:8px;">
+          ⚠ נעצר ב-${fmtDate(data.stoppedAt)} (${data.stoppedReason === 'push-failed' ? 'כשל בקליטה' : data.stoppedReason === 'balance-mismatch' ? 'אי-התאמת יתרה' : 'לא ניתן לאמת יתרה'})
+          — ימים מאוחרים יותר לא נקלטו. יש לתקן ולהריץ שוב.
+        </div>`
+      : '';
+
+    resultEl.innerHTML = `<div class="push-result-card ${data.ok ? 'push-all-ok' : ''}">
+      ${renderReconcileAnchor(data.anchor)}
+      <div class="push-preview-label">ימים שנקלטו (${data.results.length}):</div>
+      <div class="txn-table-wrap push-preview-table">
+        <table class="txn-table">
+          <thead><tr>
+            <th style="width:110px">תאריך</th><th>תנועות</th><th>נקלטו</th><th>נכשלו</th>
+            <th style="width:60px;text-align:center;">יתרה</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+    ${stopNote}`;
+    resultEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    await renderAccountPage();
+  } catch (e) {
+    resultEl.innerHTML = `<div class="push-result-card" style="color:var(--color-neg)">✗ ${escapeHtml(e.message)}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔗 התאמה מלאה';
   }
 }
 
