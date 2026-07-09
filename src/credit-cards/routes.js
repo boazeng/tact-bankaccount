@@ -15,11 +15,11 @@ const cardScraperRegistry = {
 
 const router = express.Router();
 
-router.get('/api/credit-cards', requireRole('approver'), (req, res) => {
+router.get('/api/credit-cards', (req, res) => {
   res.json({ cards: listCards() });
 });
 
-router.get('/api/credit-cards/:cardId/transactions', requireRole('approver'), (req, res) => {
+router.get('/api/credit-cards/:cardId/transactions', (req, res) => {
   const cardId = Number(req.params.cardId);
   const card = getCard(cardId);
   if (!card) return res.status(404).json({ error: 'Card not found' });

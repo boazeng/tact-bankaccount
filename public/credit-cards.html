@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TACT — חשבונות בנק</title>
+<title>TACT — כרטיסי אשראי</title>
 <link rel="icon" type="image/svg+xml" href='data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23FAF9F5"/><text x="32" y="42" text-anchor="middle" font-family="Space Grotesk,sans-serif" font-weight="700" font-size="28" fill="%231F3A5F">T</text><circle cx="50" cy="22" r="6" fill="%23D64A2E"/></svg>'>
 <link rel="stylesheet" href="/style.css">
 </head>
@@ -21,42 +21,35 @@
 </header>
 
 <main class="wrap">
+  <a href="/" class="back-link">← חזרה לכל החשבונות</a>
+
   <div class="page-head">
-    <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
-    <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
-    <p class="sub">סנכרון תנועות מהבנקים אל בסיס הנתונים המקומי. כל סנכרון מוסיף רק תנועות חדשות — אין כפילויות.</p>
+    <div class="eyebrow"><b></b>CREDIT CARDS</div>
+    <h1>כרטיסי <span class="acc">אשראי</span></h1>
+    <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים. נשמר במערכת בלבד — לא נשלח לפריוריטי.</p>
     <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
-      <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן כל החשבונות</button>
-      <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט כל החשבונות לפריוריטי</button>
-      <a href="/credit-cards.html" class="btn btn-ghost">💳 כרטיסי אשראי</a>
+      <button class="btn btn-pri" id="sync-discount-btn">↓ סנכרן כרטיסי דיסקונט</button>
     </div>
   </div>
 
-  <div id="bank-summary" class="bank-summary"></div>
-
-  <div id="banks-container">
+  <div id="cards-container">
     <p class="empty" style="padding: 32px;">טוען…</p>
   </div>
 </main>
 
 <div class="sync-panel" id="sync-panel">
   <div class="head">
-    <h3 id="sync-title">סנכרון</h3>
+    <h3 id="sync-title">סנכרון כרטיסי אשראי</h3>
     <button class="close" id="sync-close" aria-label="סגירה">✕</button>
   </div>
   <div class="progress-bar"><i></i></div>
   <div class="sync-log" id="sync-log"></div>
-  <div class="sync-summary" id="sync-summary" style="display:none">
-    <div class="m"><div class="num new" id="sum-new">0</div><div class="lbl">תנועות חדשות נשמרו</div></div>
-    <div class="m"><div class="num dup" id="sum-dup">0</div><div class="lbl">דילוג כפילות</div></div>
-    <div class="m"><div class="num" id="sum-accounts">0</div><div class="lbl">חשבונות</div></div>
-  </div>
 </div>
 
 <footer>
   <div class="wrap">© TACT · BANK ACCOUNT DASHBOARD</div>
 </footer>
 
-<script src="/app.js"></script>
+<script src="/credit-cards.js"></script>
 </body>
 </html>
