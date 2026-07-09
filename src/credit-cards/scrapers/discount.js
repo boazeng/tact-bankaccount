@@ -4,7 +4,11 @@ import puppeteer from 'puppeteer';
 // separate on purpose so the credit-cards feature has zero shared code with
 // the checking-account scraper (see plan: isolated src/credit-cards/ module).
 const ACCOUNTS_URL_FRAG = '/userAccounts/bsUserAccountsData';
-const CARD_LIST_FRAG = '/creditCards/cardList/';
+// cardList only fires when a human clicks into a specific card — no good in
+// headless production. cardsPastOrFutureDebitTotal fires automatically for
+// every account as soon as the page loads (confirmed via recon capture order:
+// index 222 vs. 368 in a real session) and carries the same card fields.
+const CARD_SUMMARY_FRAG = '/creditCards/cardsPastOrFutureDebitTotal/';
 const CARDS_PAGE = 'https://start.telebank.co.il/apollo/business2/#/CARD_DEBIT_TRANSACTION';
 
 const ymdToIso = (s) => (s && s.length === 8) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : (s || null);
@@ -29,7 +33,7 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
     let accountsResponse = null;
 
     page.on('request', (req) => {
-      if (req.url().includes(CARD_LIST_FRAG) && !cardRequestHeaders) {
+      if (req.url().includes(CARD_SUMMARY_FRAG) && !cardRequestHeaders) {
         cardRequestHeaders = req.headers();
       }
     });
@@ -105,11 +109,12 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
       onProgress({ step: 'checking-account', message: `בודק כרטיסי אשראי לחשבון ${maskedNumber} (${companyName})`, account: maskedNumber });
 
       const cardListResp = await page.evaluate(async (accNum, tplHeaders) => {
-        const r = await fetch(`/Titan/gatewayAPI/creditCards/cardList/${accNum}`, { credentials: 'include', headers: tplHeaders });
+        const r = await fetch(`/Titan/gatewayAPI/creditCards/cardsPastOrFutureDebitTotal/${accNum}/P`, { credentials: 'include', headers: tplHeaders });
         return { status: r.status, body: await r.json().catch(() => null) };
       }, accountNumber, templateHeaders);
 
-      const cards = cardListResp.body?.CardList?.CardsBlock?.CardEntry ?? [];
+      const cards = (cardListResp.body?.CardsPastOrFutureDebitTotal?.CardsBlock?.CardsEntry ?? [])
+        .filter(c => c.IsCardCanceled !== 'Y');
       if (cardListResp.status !== 200 || cardListResp.body?.Error || cards.length === 0) {
         onProgress({
           step: 'account-skip',
