@@ -73,56 +73,14 @@ async function loadCards() {
 }
 
 async function toggleCard(item) {
-  const txnsEl = item.querySelector('.card-txns');
-  const isOpen = txnsEl.style.display !== 'none';
-  if (isOpen) { txnsEl.style.display = 'none'; return; }
-
-  txnsEl.style.display = 'block';
-  if (txnsEl.dataset.loaded) return;
-
-  const cardId = item.dataset.cardId;
-  txnsEl.innerHTML = 'טוען תנועות…';
-  try {
-    const res = await fetch(`/api/credit-cards/${cardId}/transactions`);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { transactions } = await res.json();
-
-    if (!transactions.length) {
-      txnsEl.innerHTML = `<p class="empty">אין תנועות.</p>`;
-    } else {
-      const rows = transactions.map(t => `
-        <tr>
-          <td>${escapeHtml(t.purchase_date)}</td>
-          <td>${escapeHtml(t.merchant_name || '—')}</td>
-          <td>${t.installment_current ? `${t.installment_current}/${t.installment_total}` : '—'}</td>
-          <td style="color: ${t.amount < 0 ? 'var(--color-neg)' : 'var(--color-pos)'}">${fmtMoney(t.amount)}</td>
-        </tr>
-      `).join('');
-      txnsEl.innerHTML = `
-        <div class="txn-table-wrap">
-          <table class="txn-table">
-            <thead><tr><th>תאריך רכישה</th><th>בית עסק</th><th>תשלומים</th><th>סכום</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-        </div>
-        <button class="btn btn-ghost btn-sm" style="margin-top:12px;" id="priority-preview-btn-${cardId}">📄 תצוגת פריוריטי</button>
-        <div class="priority-preview" id="priority-preview-${cardId}" style="display:none; margin-top:12px;"></div>`;
-      document.getElementById(`priority-preview-btn-${cardId}`).addEventListener('click', () => togglePriorityPreview(cardId));
-    }
-    txnsEl.dataset.loaded = '1';
-  } catch (e) {
-    txnsEl.innerHTML = `<p class="empty" style="color:var(--color-neg);">שגיאה: ${escapeHtml(e.message)}</p>`;
-  }
-}
-
-async function togglePriorityPreview(cardId) {
-  const el = document.getElementById(`priority-preview-${cardId}`);
+  const el = item.querySelector('.card-txns');
   const isOpen = el.style.display !== 'none';
   if (isOpen) { el.style.display = 'none'; return; }
 
   el.style.display = 'block';
   if (el.dataset.loaded) return;
 
+  const cardId = item.dataset.cardId;
   el.innerHTML = 'טוען תצוגת פריוריטי…';
   try {
     const res = await fetch(`/api/credit-cards/${cardId}/priority-preview`);
@@ -130,7 +88,7 @@ async function togglePriorityPreview(cardId) {
     const { pages } = await res.json();
 
     if (!pages.length) {
-      el.innerHTML = `<p class="empty">אין נתונים.</p>`;
+      el.innerHTML = `<p class="empty">אין תנועות.</p>`;
     } else {
       el.innerHTML = pages.map(page => {
         const rows = page.lines.map(l => `
