@@ -236,6 +236,24 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
             message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} — טקסט גלוי בעמוד: ${(pageText || '').trim().slice(0, 2000) || '(העמוד ריק מטקסט)'}`,
             account: maskedNumber,
           });
+
+          // document.body.innerText never reaches into <iframe> content — the
+          // URL (…/osh/legacy/root-main-osh-p428New) suggests the real
+          // transaction-search UI is a legacy module embedded in an iframe,
+          // which would explain why the outer text above was just menu chrome.
+          const frames = page.frames().filter(f => f !== page.mainFrame());
+          if (!frames.length) {
+            onProgress({ step: 'debug-frames', message: `[DEBUG] אין iframes בעמוד`, account: maskedNumber });
+          }
+          for (const f of frames) {
+            let frameText = '';
+            try { frameText = await f.evaluate(() => document.body ? document.body.innerText : ''); } catch (fe) { frameText = `(שגיאה: ${fe.message})`; }
+            onProgress({
+              step: 'debug-frames',
+              message: `[DEBUG] iframe url=${f.url()} — טקסט: ${(frameText || '').trim().slice(0, 1500) || '(ריק)'}`,
+              account: maskedNumber,
+            });
+          }
         } catch (e) {
           onProgress({ step: 'debug-pre-get428', message: `[DEBUG] תפיסת אבחון נכשלה: ${e.message}`, account: maskedNumber });
         }
