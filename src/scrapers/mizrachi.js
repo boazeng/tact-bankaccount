@@ -8,7 +8,16 @@
 //   4. Wait for redirect back to mto.* and dashboard to load.
 //   5. Refetch /SkyBL/logon → list of user's accounts (in body.user.Accounts).
 //   6. For each account: changeAccount(index) → get428Index (transactions).
-import puppeteer from 'puppeteer';
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+
+// Mizrachi's get428Index (transactions) endpoint sits behind Radware Bot
+// Manager, which was bouncing every request with a SiteMinder re-auth
+// (errorcode=198) regardless of the mouse/scroll simulation in
+// humanizeInteraction() below — plain headless Chromium exposes
+// navigator.webdriver and other tells that behavioral scoring alone doesn't
+// fix. Stealth patches those headless fingerprints at the browser level.
+puppeteer.use(StealthPlugin());
 
 const PROTECTED_URL = 'https://mto.mizrahi-tefahot.co.il/OnlineApp/index.html';
 
