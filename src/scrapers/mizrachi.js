@@ -259,8 +259,23 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         }
       }
 
-      // Fetch transactions for this account
-      const txnResp = await page.evaluate(async (from, to) => {
+      // Fetch transactions for this account. Fire the request from inside the
+      // legacy p428New iframe's own execution context when present, not the
+      // top page — the debug capture above showed that iframe already
+      // mid-loading the same data via its own fetch, with the iframe's URL as
+      // referrer/origin. Our own injected fetch from the top page carries a
+      // different referrer, which SiteMinder's re-auth gate (errorcode=198)
+      // appears to reject specifically for this endpoint regardless of
+      // cookies/behavior — matching the frame context it expects fixes that.
+      const p428Frame = page.frames().find(f => /p428New/i.test(f.url()));
+      onProgress({
+        step: 'debug-frame-target',
+        message: p428Frame
+          ? `[DEBUG] מריץ את get428Index בתוך ה-iframe: ${p428Frame.url()}`
+          : `[DEBUG] לא נמצא p428New iframe — מריץ מהעמוד הראשי (fallback)`,
+        account: maskedNumber,
+      });
+      const txnResp = await (p428Frame || page).evaluate(async (from, to) => {
         const r = await fetch('/Online/api/SkyOSH/get428Index', {
           method: 'POST', credentials: 'include',
           headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
