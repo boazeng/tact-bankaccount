@@ -375,8 +375,16 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       // Fallback: the old click-then-manual-fetch chain, kept for accounts
       // where the frame/load/parse doesn't pan out, so they degrade to the
       // previous (broken) behavior rather than being silently skipped.
-      const p428Frame = page.frames().find(f => /p428New/i.test(f.url()));
+      //
+      // Everything below is wrapped in try/catch: the iframe gets replaced
+      // by the SPA between accounts, and touching a stale Frame reference
+      // throws "Attempted to use detached Frame" — uncaught, that aborted
+      // the *entire* remaining sync (all later accounts) instead of just
+      // this one, the first time it happened live.
+      let p428Frame = null;
       let transactions = null;
+      try {
+      p428Frame = page.frames().find(f => /p428New/i.test(f.url()));
 
       if (p428Frame) {
         const loadedText = await waitForFrameLoaded(p428Frame);
@@ -391,7 +399,7 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         } else {
           onProgress({
             step: 'debug-text-parse',
-            message: `[DEBUG] ${maskedNumber}: ה-iframe לא סיים לטעון ("טעינה הסתיימה") תוך 15 שניות — fallback לשיטה הישנה`,
+            message: `[DEBUG] ${maskedNumber}: ה-iframe לא סיים לטעון ("טעינה הסתיימה") תוך 30 שניות — fallback לשיטה הישנה`,
             account: maskedNumber,
           });
         }
@@ -507,6 +515,14 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
             referenceNumber: ref != null ? String(ref) : null,
           };
         });
+      }
+      } catch (e) {
+        onProgress({
+          step: 'account-error',
+          message: `שגיאה בחשבון ${maskedNumber}: ${e.message}`,
+          account: maskedNumber,
+        });
+        continue;
       }
 
       results.push({
