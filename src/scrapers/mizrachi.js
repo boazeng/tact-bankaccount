@@ -26,6 +26,35 @@ const ddmmyyyy = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getM
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Finds the smallest (fewest descendant elements) exact text match among
+// common clickable-ish tags and clicks it — mirrors the text-matching
+// pattern already used for the login/SMS buttons above, but prefers the
+// most specific match so we don't click a large container whose combined
+// text happens to include the target string.
+async function clickByExactText(frame, text) {
+  return frame.evaluate((searchText) => {
+    const candidates = Array.from(document.querySelectorAll('a, button, li, span, div, td'));
+    let best = null;
+    for (const el of candidates) {
+      if ((el.textContent || '').trim() !== searchText) continue;
+      if (!best || el.querySelectorAll('*').length < best.querySelectorAll('*').length) best = el;
+    }
+    if (!best) return false;
+    best.click();
+    return true;
+  }, text);
+}
+
+// Maps daysBack to the closest quick-range button visible in the p428New
+// transactions iframe ("7/30 ימים אחרונים", "3 חודשים אחרונים", "שנה אחורה").
+// No support yet for the custom "בין תאריכים" range beyond a year back.
+function pickPeriodButtonText(daysBack) {
+  if (daysBack <= 7) return '7 ימים אחרונים';
+  if (daysBack <= 30) return '30 ימים אחרונים';
+  if (daysBack <= 90) return '3 חודשים אחרונים';
+  return 'שנה אחורה';
+}
+
 // The bank's transactions endpoint (get428Index) is gated by Radware Bot
 // Manager — raw fetch() calls fired right after login get bounced back
 // through SiteMinder re-auth (errorcode=198) because there's no human
@@ -259,45 +288,88 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         }
       }
 
-      // Fetch transactions for this account. Fire the request from inside the
-      // legacy p428New iframe's own execution context when present, not the
-      // top page — the debug capture above showed that iframe already
-      // mid-loading the same data via its own fetch, with the iframe's URL as
-      // referrer/origin. Our own injected fetch from the top page carries a
-      // different referrer, which SiteMinder's re-auth gate (errorcode=198)
-      // appears to reject specifically for this endpoint regardless of
-      // cookies/behavior — matching the frame context it expects fixes that.
+      // Fetch transactions for this account. Two attempts at getting past
+      // Radware's SiteMinder re-auth gate (errorcode=198) on this endpoint —
+      // matching the referrer (running fetch inside the p428New iframe's own
+      // context instead of the top page) — still got bounced identically.
+      // The hand-built request is likely missing something only the real
+      // Angular HTTP client attaches on an actual click (e.g. a CSRF token,
+      // a populated actionGuid — ours sends it empty). So: click the real
+      // period button inside that iframe and capture whatever request ITS
+      // OWN code fires, instead of constructing the request ourselves.
+      // Falls back to the old hand-built fetch if the button isn't found or
+      // no matching response arrives in time, so accounts don't go from
+      // "blocked" to "silently zero" if this path has issues somewhere.
       const p428Frame = page.frames().find(f => /p428New/i.test(f.url()));
-      onProgress({
-        step: 'debug-frame-target',
-        message: p428Frame
-          ? `[DEBUG] מריץ את get428Index בתוך ה-iframe: ${p428Frame.url()}`
-          : `[DEBUG] לא נמצא p428New iframe — מריץ מהעמוד הראשי (fallback)`,
-        account: maskedNumber,
-      });
-      const txnResp = await (p428Frame || page).evaluate(async (from, to) => {
-        const r = await fetch('/Online/api/SkyOSH/get428Index', {
-          method: 'POST', credentials: 'include',
-          headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
-          body: JSON.stringify({
-            inToDate: to,
-            inFromDate: from,
-            inSugTnua: '',
-            table: { sortExpression: 'MC02PeulaTaaEZ DESC', sortOrder: 'DESC', startRowIndex: 0, maxRow: 500, actionGuid: '' },
-            isFromSearch: false,
-          }),
+      let txnResp = null;
+
+      if (p428Frame) {
+        const periodText = pickPeriodButtonText(daysBack);
+        const responsePromise = page.waitForResponse(
+          r => r.url().includes('/Online/api/SkyOSH/get428Index'),
+          { timeout: 20_000 },
+        ).catch(() => null);
+        const clicked = await clickByExactText(p428Frame, periodText).catch(() => false);
+        onProgress({
+          step: 'debug-frame-target',
+          message: clicked
+            ? `[DEBUG] נלחץ הכפתור "${periodText}" ב-iframe, ממתין לתגובה אמיתית של get428Index…`
+            : `[DEBUG] לא נמצא כפתור "${periodText}" ב-iframe — fallback לבקשה ידנית`,
+          account: maskedNumber,
         });
-        const text = await r.text();
-        const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-        return {
-          status: r.status,
-          redirected: r.redirected,
-          finalUrl: r.url,
-          contentType: r.headers.get('content-type'),
-          title: titleMatch ? titleMatch[1] : null,
-          text,
-        };
-      }, fromStr, toStr);
+        if (clicked) {
+          const response = await responsePromise;
+          if (response) {
+            const text = await response.text().catch(() => '');
+            const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            txnResp = {
+              status: response.status(),
+              redirected: response.request().redirectChain().length > 0,
+              finalUrl: response.url(),
+              contentType: response.headers()['content-type'] || null,
+              title: titleMatch ? titleMatch[1] : null,
+              text,
+            };
+            onProgress({
+              step: 'debug-frame-target',
+              message: `[DEBUG] תגובה אמיתית מ-get428Index אחרי קליק: status=${txnResp.status} contentType=${txnResp.contentType}`,
+              account: maskedNumber,
+            });
+          } else {
+            onProgress({
+              step: 'debug-frame-target',
+              message: `[DEBUG] לא הגיעה תגובה מ-get428Index תוך 20 שניות אחרי הקליק — fallback לבקשה ידנית`,
+              account: maskedNumber,
+            });
+          }
+        }
+      }
+
+      if (!txnResp) {
+        txnResp = await (p428Frame || page).evaluate(async (from, to) => {
+          const r = await fetch('/Online/api/SkyOSH/get428Index', {
+            method: 'POST', credentials: 'include',
+            headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
+            body: JSON.stringify({
+              inToDate: to,
+              inFromDate: from,
+              inSugTnua: '',
+              table: { sortExpression: 'MC02PeulaTaaEZ DESC', sortOrder: 'DESC', startRowIndex: 0, maxRow: 500, actionGuid: '' },
+              isFromSearch: false,
+            }),
+          });
+          const text = await r.text();
+          const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          return {
+            status: r.status,
+            redirected: r.redirected,
+            finalUrl: r.url,
+            contentType: r.headers.get('content-type'),
+            title: titleMatch ? titleMatch[1] : null,
+            text,
+          };
+        }, fromStr, toStr);
+      }
 
       if (txnResp.status >= 400) {
         onProgress({ step: 'account-error', message: `שגיאה בחשבון ${maskedNumber}: HTTP ${txnResp.status}`, account: maskedNumber });
