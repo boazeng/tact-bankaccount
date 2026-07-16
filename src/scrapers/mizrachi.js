@@ -55,6 +55,79 @@ function pickPeriodButtonText(daysBack) {
   return 'שנה אחורה';
 }
 
+// The p428New iframe loads its own transaction data in the background —
+// independent of, and unaffected by, the SiteMinder block that hits every
+// request WE try to fire (manual fetch, fetch-from-iframe-context, click-
+// triggered — all bounced identically). Poll its visible text for the
+// "loading finished" marker instead of intercepting any network call.
+async function waitForFrameLoaded(frame, { timeoutMs = 15_000, intervalMs = 500 } = {}) {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const text = await frame.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
+    if (/טעינה הסתיימה/.test(text)) return text;
+    await sleep(intervalMs);
+  }
+  return null;
+}
+
+// Parses the rendered transaction list out of the iframe's plain visible
+// text (no DOM structure available to us — only innerText). Each row is
+// "DD/MM/YY <description> <amount>[ <balance>]"; balance is only present on
+// the last row of a same-day group (the bank shows one closing balance per
+// day, not per transaction), so runningBalance is null on the others — a
+// real reduction in precision vs the JSON API, but still real data.
+function parseMizrachiTransactionText(rawText, maskedNumber) {
+  let text = rawText || '';
+  const startMarker = 'תנועות אחרונות';
+  const startIdx = text.indexOf(startMarker);
+  if (startIdx !== -1) text = text.slice(startIdx + startMarker.length);
+  for (const marker of ['יתרה קודמת נכון', '(י)-פעולה']) {
+    const idx = text.indexOf(marker);
+    if (idx !== -1) text = text.slice(0, idx);
+  }
+
+  const numPattern = '[\\u200e\\u200f]?-?[\\d,]+\\.\\d{2}';
+  const rowRe = new RegExp(`^([\\s\\S]+?)\\s+(${numPattern})(?:\\s+(${numPattern}))?$`);
+  const clean = (s) => Number(s.replace(/[‎‏]/g, '').replace(/,/g, ''));
+
+  const parts = text.split(/(?=\d{2}\/\d{2}\/\d{2}(?!\d))/);
+  const seenKeys = new Map();
+  const rows = [];
+  for (const part of parts) {
+    const dateMatch = part.match(/^(\d{2})\/(\d{2})\/(\d{2})\s+([\s\S]+)$/);
+    if (!dateMatch) continue;
+    const [, dd, mm, yy, rest] = dateMatch;
+    const rowMatch = rest.trim().match(rowRe);
+    if (!rowMatch) continue;
+    const [, descRaw, amountRaw, balanceRaw] = rowMatch;
+    const amount = clean(amountRaw);
+    if (!Number.isFinite(amount)) continue;
+    const isoDate = `20${yy}-${mm}-${dd}`;
+    const description = descRaw.trim();
+    // Synthetic dedup key: same date+description+amount can legitimately
+    // repeat in one day (e.g. two identical fees) — count occurrences so
+    // each gets a distinct transactionID instead of colliding.
+    const dupKey = `${isoDate}|${description}|${amount}`;
+    const occurrence = (seenKeys.get(dupKey) || 0) + 1;
+    seenKeys.set(dupKey, occurrence);
+    rows.push({
+      transactionID: `${maskedNumber}|${isoDate}|${description}|${amount}|${occurrence}`,
+      date: isoDate,
+      effectiveDate: isoDate,
+      description,
+      extendedDescription: null,
+      amount,
+      runningBalance: balanceRaw ? clean(balanceRaw) : null,
+      beneficiaryName: null,
+      beneficiaryBankCode: null,
+      beneficiaryBranch: null,
+      beneficiaryAccountNumber: null,
+      referenceNumber: null,
+    });
+  }
+  return rows;
+}
+
 // The bank's transactions endpoint (get428Index) is gated by Radware Bot
 // Manager — raw fetch() calls fired right after login get bounced back
 // through SiteMinder re-auth (errorcode=198) because there's no human
@@ -288,153 +361,153 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         }
       }
 
-      // Fetch transactions for this account. Two attempts at getting past
-      // Radware's SiteMinder re-auth gate (errorcode=198) on this endpoint —
-      // matching the referrer (running fetch inside the p428New iframe's own
-      // context instead of the top page) — still got bounced identically.
-      // The hand-built request is likely missing something only the real
-      // Angular HTTP client attaches on an actual click (e.g. a CSRF token,
-      // a populated actionGuid — ours sends it empty). So: click the real
-      // period button inside that iframe and capture whatever request ITS
-      // OWN code fires, instead of constructing the request ourselves.
-      // Falls back to the old hand-built fetch if the button isn't found or
-      // no matching response arrives in time, so accounts don't go from
-      // "blocked" to "silently zero" if this path has issues somewhere.
+      // Fetch transactions for this account.
+      //
+      // Primary path: the p428New iframe loads its own transaction data in
+      // the background, completely independent of the SiteMinder block that
+      // hits every request WE explicitly fire — three different attempts at
+      // replicating/triggering that request (manual fetch, fetch-from-
+      // iframe-context, a real click on the period button) all got bounced
+      // with the identical errorcode=198, while the iframe's silent auto-load
+      // works every time. So: wait for it to finish loading on its own, then
+      // parse the rendered table text directly — no request of ours involved.
+      //
+      // Fallback: the old click-then-manual-fetch chain, kept for accounts
+      // where the frame/load/parse doesn't pan out, so they degrade to the
+      // previous (broken) behavior rather than being silently skipped.
       const p428Frame = page.frames().find(f => /p428New/i.test(f.url()));
-      let txnResp = null;
+      let transactions = null;
 
       if (p428Frame) {
-        const periodText = pickPeriodButtonText(daysBack);
-        const responsePromise = page.waitForResponse(
-          r => r.url().includes('/Online/api/SkyOSH/get428Index'),
-          { timeout: 20_000 },
-        ).catch(() => null);
-        const clicked = await clickByExactText(p428Frame, periodText).catch(() => false);
-        onProgress({
-          step: 'debug-frame-target',
-          message: clicked
-            ? `[DEBUG] נלחץ הכפתור "${periodText}" ב-iframe, ממתין לתגובה אמיתית של get428Index…`
-            : `[DEBUG] לא נמצא כפתור "${periodText}" ב-iframe — fallback לבקשה ידנית`,
-          account: maskedNumber,
-        });
-        if (clicked) {
-          const response = await responsePromise;
-          if (response) {
-            const text = await response.text().catch(() => '');
-            const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-            txnResp = {
-              status: response.status(),
-              redirected: response.request().redirectChain().length > 0,
-              finalUrl: response.url(),
-              contentType: response.headers()['content-type'] || null,
-              title: titleMatch ? titleMatch[1] : null,
-              text,
-            };
-            onProgress({
-              step: 'debug-frame-target',
-              message: `[DEBUG] תגובה אמיתית מ-get428Index אחרי קליק: status=${txnResp.status} contentType=${txnResp.contentType}`,
-              account: maskedNumber,
-            });
-          } else {
-            onProgress({
-              step: 'debug-frame-target',
-              message: `[DEBUG] לא הגיעה תגובה מ-get428Index תוך 20 שניות אחרי הקליק — fallback לבקשה ידנית`,
-              account: maskedNumber,
-            });
-          }
+        const loadedText = await waitForFrameLoaded(p428Frame);
+        if (loadedText) {
+          const parsed = parseMizrachiTransactionText(loadedText, maskedNumber);
+          onProgress({
+            step: 'debug-text-parse',
+            message: `[DEBUG] ${maskedNumber}: פוענחו ${parsed.length} תנועות מהטקסט המוצג ב-iframe`,
+            account: maskedNumber,
+          });
+          if (parsed.length) transactions = parsed;
+        } else {
+          onProgress({
+            step: 'debug-text-parse',
+            message: `[DEBUG] ${maskedNumber}: ה-iframe לא סיים לטעון ("טעינה הסתיימה") תוך 15 שניות — fallback לשיטה הישנה`,
+            account: maskedNumber,
+          });
         }
       }
 
-      if (!txnResp) {
-        txnResp = await (p428Frame || page).evaluate(async (from, to) => {
-          const r = await fetch('/Online/api/SkyOSH/get428Index', {
-            method: 'POST', credentials: 'include',
-            headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
-            body: JSON.stringify({
-              inToDate: to,
-              inFromDate: from,
-              inSugTnua: '',
-              table: { sortExpression: 'MC02PeulaTaaEZ DESC', sortOrder: 'DESC', startRowIndex: 0, maxRow: 500, actionGuid: '' },
-              isFromSearch: false,
-            }),
+      if (!transactions) {
+        let txnResp = null;
+        const periodText = pickPeriodButtonText(daysBack);
+        if (p428Frame) {
+          const responsePromise = page.waitForResponse(
+            r => r.url().includes('/Online/api/SkyOSH/get428Index'),
+            { timeout: 20_000 },
+          ).catch(() => null);
+          const clicked = await clickByExactText(p428Frame, periodText).catch(() => false);
+          if (clicked) {
+            const response = await responsePromise;
+            if (response) {
+              const text = await response.text().catch(() => '');
+              const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+              txnResp = {
+                status: response.status(),
+                redirected: response.request().redirectChain().length > 0,
+                finalUrl: response.url(),
+                contentType: response.headers()['content-type'] || null,
+                title: titleMatch ? titleMatch[1] : null,
+                text,
+              };
+            }
+          }
+        }
+
+        if (!txnResp) {
+          txnResp = await (p428Frame || page).evaluate(async (from, to) => {
+            const r = await fetch('/Online/api/SkyOSH/get428Index', {
+              method: 'POST', credentials: 'include',
+              headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
+              body: JSON.stringify({
+                inToDate: to,
+                inFromDate: from,
+                inSugTnua: '',
+                table: { sortExpression: 'MC02PeulaTaaEZ DESC', sortOrder: 'DESC', startRowIndex: 0, maxRow: 500, actionGuid: '' },
+                isFromSearch: false,
+              }),
+            });
+            const text = await r.text();
+            const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+            return {
+              status: r.status,
+              redirected: r.redirected,
+              finalUrl: r.url,
+              contentType: r.headers.get('content-type'),
+              title: titleMatch ? titleMatch[1] : null,
+              text,
+            };
+          }, fromStr, toStr);
+        }
+
+        if (txnResp.status >= 400) {
+          onProgress({ step: 'account-error', message: `שגיאה בחשבון ${maskedNumber}: HTTP ${txnResp.status}`, account: maskedNumber });
+          continue;
+        }
+
+        let txnBody = null;
+        try { txnBody = JSON.parse(txnResp.text || '{}'); } catch {}
+
+        // get428Index should always return JSON. A parse failure means something
+        // other than the real API response came back (redirect, challenge page,
+        // WAF block, etc.) — surface it as an explicit account-level error
+        // instead of silently reporting zero transactions as a fake success.
+        if (!txnBody) {
+          const body = txnResp.text || '';
+          const hasLoginForm = /userNumberDesktopHeb|passwordDesktopHeb/.test(body);
+          const hasAppShell = /ng-version|app-root/.test(body);
+          onProgress({
+            step: 'account-error',
+            message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}" bodyLength=${body.length} hasLoginForm=${hasLoginForm} hasAppShell=${hasAppShell}. לא נמשכו תנועות. גוף התגובה (3000 תווים ראשונים): ${body.slice(0, 3000)}`,
+            account: maskedNumber,
           });
-          const text = await r.text();
-          const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+          continue;
+        }
+
+        const rows = txnBody?.body?.table?.rows ?? [];
+        const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
+
+        if (!realRows.length) {
+          onProgress({
+            step: 'debug-txn-shape',
+            message: `[DEBUG] ${maskedNumber}: bodyKeys=${Object.keys(txnBody).join(',')} rows=${rows.length} realRows=0` +
+              (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')} firstRow=${JSON.stringify(rows[0]).slice(0, 800)}` : ' (rows array itself is empty)'),
+            account: maskedNumber,
+          });
+        }
+
+        const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
+        transactions = realRows.map(r => {
+          const amountRaw = Number(String(r.MC02SchumEZ || 0).replace(/,/g, ''));
+          const isCredit = r.MC02OfiSchumEZ === 1 || r.MC02OfiSchumEZ === '1';
+          const signedAmount = isCredit ? Math.abs(amountRaw) : -Math.abs(amountRaw);
+          const balanceRaw = r.MC02YitraEZ != null ? Number(String(r.MC02YitraEZ).replace(/,/g, '')) : null;
+          const ref = r.MC02AsmEZ || r.MC02AsmahtaMekoritEZ || r.TransactionNumber;
           return {
-            status: r.status,
-            redirected: r.redirected,
-            finalUrl: r.url,
-            contentType: r.headers.get('content-type'),
-            title: titleMatch ? titleMatch[1] : null,
-            text,
+            transactionID: `${maskedNumber}|${ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh) || ''}|${ref || ''}|${r.RowNumber || ''}`,
+            date: ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh),
+            effectiveDate: ymdIso(r.TaarichEreh) || ymdIso(r.MC02PeulaTaaEZ),
+            description: r.MC02TnuaTeurEZ || r.Teur || '',
+            extendedDescription: r.P428G2Details || null,
+            amount: signedAmount,
+            runningBalance: balanceRaw,
+            beneficiaryName: r.NegdiShem || null,
+            beneficiaryBankCode: r.NegdiBank != null ? String(r.NegdiBank) : null,
+            beneficiaryBranch: r.NegdiSnif != null ? String(r.NegdiSnif) : null,
+            beneficiaryAccountNumber: r.NegdiCheshbon != null ? String(r.NegdiCheshbon) : null,
+            referenceNumber: ref != null ? String(ref) : null,
           };
-        }, fromStr, toStr);
-      }
-
-      if (txnResp.status >= 400) {
-        onProgress({ step: 'account-error', message: `שגיאה בחשבון ${maskedNumber}: HTTP ${txnResp.status}`, account: maskedNumber });
-        continue;
-      }
-
-      let txnBody = null;
-      try { txnBody = JSON.parse(txnResp.text || '{}'); } catch {}
-
-      // get428Index should always return JSON. A parse failure means something
-      // other than the real API response came back (redirect, challenge page,
-      // WAF block, etc.) — surface it as an explicit account-level error
-      // instead of silently reporting zero transactions as a fake success.
-      if (!txnBody) {
-        const body = txnResp.text || '';
-        const hasLoginForm = /userNumberDesktopHeb|passwordDesktopHeb/.test(body);
-        const hasAppShell = /ng-version|app-root/.test(body);
-        onProgress({
-          step: 'account-error',
-          message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}" bodyLength=${body.length} hasLoginForm=${hasLoginForm} hasAppShell=${hasAppShell}. לא נמשכו תנועות. גוף התגובה (3000 תווים ראשונים): ${body.slice(0, 3000)}`,
-          account: maskedNumber,
-        });
-        continue;
-      }
-
-      const rows = txnBody?.body?.table?.rows ?? [];
-      const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
-
-      // Diagnostic for the "valid JSON but zero transactions" case — distinct
-      // from the non-JSON interstitial-gate case above (already fixed,
-      // 2026-07-05). If the bank's response shape changed, rows would come
-      // back non-empty but the RecTypeSpecified/MC02PeulaTaaEZSpecified filter
-      // could silently drop everything with no error raised anywhere. Only
-      // fires in the ambiguous case so normal syncs stay quiet.
-      if (!realRows.length) {
-        onProgress({
-          step: 'debug-txn-shape',
-          message: `[DEBUG] ${maskedNumber}: bodyKeys=${Object.keys(txnBody).join(',')} rows=${rows.length} realRows=0` +
-            (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')} firstRow=${JSON.stringify(rows[0]).slice(0, 800)}` : ' (rows array itself is empty)'),
-          account: maskedNumber,
         });
       }
-
-      const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
-      const transactions = realRows.map(r => {
-        const amountRaw = Number(String(r.MC02SchumEZ || 0).replace(/,/g, ''));
-        const isCredit = r.MC02OfiSchumEZ === 1 || r.MC02OfiSchumEZ === '1';
-        const signedAmount = isCredit ? Math.abs(amountRaw) : -Math.abs(amountRaw);
-        const balanceRaw = r.MC02YitraEZ != null ? Number(String(r.MC02YitraEZ).replace(/,/g, '')) : null;
-        const ref = r.MC02AsmEZ || r.MC02AsmahtaMekoritEZ || r.TransactionNumber;
-        return {
-          transactionID: `${maskedNumber}|${ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh) || ''}|${ref || ''}|${r.RowNumber || ''}`,
-          date: ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh),
-          effectiveDate: ymdIso(r.TaarichEreh) || ymdIso(r.MC02PeulaTaaEZ),
-          description: r.MC02TnuaTeurEZ || r.Teur || '',
-          extendedDescription: r.P428G2Details || null,
-          amount: signedAmount,
-          runningBalance: balanceRaw,
-          beneficiaryName: r.NegdiShem || null,
-          beneficiaryBankCode: r.NegdiBank != null ? String(r.NegdiBank) : null,
-          beneficiaryBranch: r.NegdiSnif != null ? String(r.NegdiSnif) : null,
-          beneficiaryAccountNumber: r.NegdiCheshbon != null ? String(r.NegdiCheshbon) : null,
-          referenceNumber: ref != null ? String(ref) : null,
-        };
-      });
 
       results.push({
         account: {
