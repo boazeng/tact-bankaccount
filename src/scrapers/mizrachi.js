@@ -10,6 +10,8 @@
 //   6. For each account: changeAccount(index) → get428Index (transactions).
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Mizrachi's get428Index (transactions) endpoint sits behind Radware Bot
 // Manager, which was bouncing every request with a SiteMinder re-auth
@@ -219,6 +221,28 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       // protected get428Index call (see humanizeInteraction above).
       await sleep(500);
       await humanizeInteraction(page);
+
+      // One-time diagnostic (first account only) for the "get428Index always
+      // bounces with errorcode=198" investigation — captures what a real
+      // browser would actually be showing/holding right before the blocked
+      // call, since this runs headless on a remote box with no way to watch
+      // it live. Screenshot saved to disk; cookie *names* only (not values).
+      if (i === 0) {
+        try {
+          const cookieNames = await page.evaluate(() => document.cookie.split(';').map(c => c.split('=')[0].trim()).filter(Boolean));
+          const outDir = path.resolve('output');
+          fs.mkdirSync(outDir, { recursive: true });
+          const shotPath = path.join(outDir, `mizrachi-debug-${Date.now()}.png`);
+          await page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
+          onProgress({
+            step: 'debug-pre-get428',
+            message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} screenshot=${shotPath}`,
+            account: maskedNumber,
+          });
+        } catch (e) {
+          onProgress({ step: 'debug-pre-get428', message: `[DEBUG] תפיסת אבחון נכשלה: ${e.message}`, account: maskedNumber });
+        }
+      }
 
       // Fetch transactions for this account
       const txnResp = await page.evaluate(async (from, to) => {
