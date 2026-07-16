@@ -107,7 +107,7 @@ async function loadPriorityPages(cardId) {
   try {
     const res = await fetch(`/api/credit-cards/${cardId}/priority-preview`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const { pages } = await res.json();
+    const { card, pages } = await res.json();
 
     if (!pages.length) {
       el.innerHTML = `<p class="empty">אין תנועות.</p>`;
@@ -129,12 +129,24 @@ async function loadPriorityPages(cardId) {
           missing: '<span style="color:var(--color-text-light);">טרם נקלט</span>',
           unknown: `<span style="color:var(--color-neg);">שגיאה בבדיקת סטטוס${page.statusError ? ': ' + escapeHtml(page.statusError) : ''}</span>`,
         })[page.priorityStatus] || '<span style="color:var(--color-text-light);">יש להגדיר קופה כדי לבדוק סטטוס</span>';
+        // Shown only when the status check found NO page under this card's
+        // CASHNAME on this date, but Priority does have page(s) under some
+        // other CASHNAME(s) that day — a strong hint the configured CASHNAME
+        // doesn't exactly match what's actually in Priority (e.g. a
+        // whitespace/typo difference invisible on screen).
+        const cashnameHint = page.priorityStatus === 'missing' && page.otherCashnamesOnDate?.length
+          ? `<div style="font-size:.85rem; color:#c77700; margin-top:4px;">
+              יש בפריוריטי דף/דפים בתאריך הזה תחת קופה אחרת: ${page.otherCashnamesOnDate.map(c => `"${escapeHtml(c)}"`).join(', ')}
+              — ודאי שהקופה שהוגדרה כאן ("${escapeHtml(card?.priority_cashname || '')}") תואמת בדיוק.
+            </div>`
+          : '';
         return `
           <div style="margin-bottom:16px;">
             <div style="font-weight:700; margin-bottom:6px; display:flex; gap:10px; align-items:center;">
               <span>דף בנק ליום ${escapeHtml(page.curdate)}</span>
               ${pushedBadge}
             </div>
+            ${cashnameHint}
             <div class="txn-table-wrap">
               <table class="txn-table">
                 <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>

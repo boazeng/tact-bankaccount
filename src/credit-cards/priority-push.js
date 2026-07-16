@@ -44,6 +44,36 @@ async function nextRunningPageNumber(cashName, year) {
   return (Number.isFinite(n) ? n : 0) + 1;
 }
 
+// Collapses internal whitespace runs and trims — a CASHNAME that looks
+// identical on screen can still fail an OData `eq` filter over a trailing
+// space, a double space, or other invisible whitespace difference picked up
+// wherever the value was originally typed into Priority. Comparing
+// normalized text client-side instead of filtering by CASHNAME server-side
+// is what actually makes the match reliable.
+function normalizeCashName(s) {
+  return String(s || '').replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * All BANKPAGES rows for a given date, across every CASHNAME — deliberately
+ * NOT filtered by CASHNAME server-side (see normalizeCashName). Callers
+ * match the CASHNAME they care about themselves.
+ */
+async function fetchBankPagesForDate(curdate) {
+  const params = new URLSearchParams({
+    '$filter': `CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
+    '$select': 'CASHNAME,BPYEAR,CASH,BPNUM',
+    '$top': '200',
+  });
+  const r = await fetch(`${PRIORITY_URL}/BANKPAGES?${params}`, { headers: getHeaders });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`BANKPAGES lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value || [];
+}
+
 /**
  * Checks Priority itself for an existing page on this exact CASHNAME+date —
  * not just our own local card_priority_pushes tracking, which can drift out
@@ -52,21 +82,11 @@ async function nextRunningPageNumber(cashName, year) {
  * it). Returns { BPYEAR, CASH, BPNUM } if one exists, or null.
  */
 export async function findExistingCardPage(cashName, curdate) {
-  // Range comparison, not eq — matches the proven pattern already used
-  // against this same Priority instance in src/priority/check.js.
-  const params = new URLSearchParams({
-    '$filter': `CASHNAME eq '${cashName}' and CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
-    '$select': 'BPYEAR,CASH,BPNUM',
-    '$top': '1',
-  });
-  const r = await fetch(`${PRIORITY_URL}/BANKPAGES?${params}`, { headers: getHeaders });
-  if (!r.ok) {
-    const text = await r.text().catch(() => '');
-    throw new Error(`BANKPAGES existence check failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
-  }
-  const data = await r.json();
-  if (!data.value?.length) return null;
-  const { BPYEAR, CASH, BPNUM } = data.value[0];
+  const rows = await fetchBankPagesForDate(curdate);
+  const target = normalizeCashName(cashName);
+  const match = rows.find(row => normalizeCashName(row.CASHNAME) === target);
+  if (!match) return null;
+  const { BPYEAR, CASH, BPNUM } = match;
   return { BPYEAR, CASH, BPNUM };
 }
 
@@ -116,12 +136,13 @@ function buildCardLinePayload(line) {
  * Fetches the bank-lines Priority already has for this CASHNAME+date, so a
  * retry can tell which of our expected lines are genuinely missing instead
  * of trusting our own local "pushed" bookkeeping (which drifted from reality
- * — see the push/check split below).
+ * — see the push/check split below). Same normalized client-side CASHNAME
+ * match as findExistingCardPage, for the same reason.
  */
 export async function fetchExistingCardLines(cashName, curdate) {
   const params = new URLSearchParams({
-    '$filter': `CASHNAME eq '${cashName}' and CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
-    '$select': 'DETAILS,CREDIT,DEBIT',
+    '$filter': `CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
+    '$select': 'CASHNAME,DETAILS,CREDIT,DEBIT',
     '$top': '500',
   });
   const r = await fetch(`${PRIORITY_URL}/BANKLINESA?${params}`, { headers: getHeaders });
@@ -130,7 +151,8 @@ export async function fetchExistingCardLines(cashName, curdate) {
     throw new Error(`BANKLINESA lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
   }
   const data = await r.json();
-  return data.value || [];
+  const target = normalizeCashName(cashName);
+  return (data.value || []).filter(l => normalizeCashName(l.CASHNAME) === target);
 }
 
 /**
@@ -164,11 +186,20 @@ export function diffMissingLines(lines, existingLines) {
  * UI should show as "נקלט"/"טרם נקלט", NOT our local card_priority_pushes
  * table, which only records that a push was attempted and can't tell
  * whether every line actually landed (see pushCardPageToPriority).
- * Returns { status: 'missing'|'partial'|'complete', missingCount }.
+ * When nothing matches but Priority DOES have other pages on that date, the
+ * other CASHNAMEs found are returned too — a page that looks captured to
+ * the eye but a different-looking CASHNAME in Priority is exactly the kind
+ * of mismatch normalizeCashName can't fix silently, so surface it instead.
+ * Returns { status: 'missing'|'partial'|'complete', missingCount, otherCashnamesOnDate? }.
  */
 export async function checkCardPageStatus(cashName, page) {
-  const existing = await findExistingCardPage(cashName, page.curdate);
-  if (!existing) return { status: 'missing', missingCount: page.lines.length };
+  const rows = await fetchBankPagesForDate(page.curdate);
+  const target = normalizeCashName(cashName);
+  const existing = rows.find(row => normalizeCashName(row.CASHNAME) === target);
+  if (!existing) {
+    const otherCashnamesOnDate = [...new Set(rows.map(r => r.CASHNAME).filter(Boolean))];
+    return { status: 'missing', missingCount: page.lines.length, otherCashnamesOnDate };
+  }
   const existingLines = await fetchExistingCardLines(cashName, page.curdate);
   const missing = diffMissingLines(page.lines, existingLines);
   return { status: missing.length === 0 ? 'complete' : 'partial', missingCount: missing.length };
