@@ -144,14 +144,22 @@ async function loadPriorityPages(cardId) {
 
     const rowsHtml = pages.map((page, idx) => {
       const isActive = page.priorityStatus !== 'complete';
+      // `matched` is set per-line by the live check whenever a page header
+      // was found in Priority (undefined when the whole page reads
+      // 'missing' — nothing to compare a line against). Marking every row
+      // individually, instead of a separate missing-lines summary, is what
+      // actually lets a real gap be told apart from a text-match false
+      // positive at a glance — you see it right next to the line itself.
+      const hasLineStatus = page.lines.some(l => l.matched !== undefined);
       const txnRows = page.lines.map(l => `
-        <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
+        <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}${l.matched === false ? ' style="background:rgba(199,119,0,.1);"' : ''}>
           <td>${escapeHtml(l.curdate)}</td>
           <td>${escapeHtml(l.valueDate)}</td>
           <td>${escapeHtml(l.btcode)}</td>
           <td>${escapeHtml(l.details)}</td>
           <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
           <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
+          ${hasLineStatus ? `<td>${l.matched === false ? '<span style="color:#c77700;">✗ חסר</span>' : l.matched === true ? '<span style="color:var(--color-pos);">✓</span>' : ''}</td>` : ''}
         </tr>
       `).join('');
       // Shown only when the status check found NO page under this card's
@@ -164,18 +172,6 @@ async function loadPriorityPages(cardId) {
             — ודאי שהקופה שהוגדרה כאן ("${escapeHtml(card?.priority_cashname || '')}") תואמת בדיוק.
           </div>`
         : '';
-      // Lists exactly which lines the diff thinks are missing — lets you
-      // tell a genuine gap from a text-matching false positive at a glance
-      // (e.g. a line that's clearly already in Priority under a slightly
-      // different merchant-name spelling).
-      const missingLinesHint = page.priorityStatus === 'partial' && page.missingLines?.length
-        ? `<div style="font-size:.85rem; color:#c77700; margin:6px 0;">
-            שורות שלפי הבדיקה חסרות בפריוריטי:
-            <ul style="margin:4px 0 0; padding-inline-start:20px;">
-              ${page.missingLines.map(l => `<li>${escapeHtml(l.details)} — ${fmtMoney(l.credit || -l.debit)}</li>`).join('')}
-            </ul>
-          </div>`
-        : '';
       return `
         <div class="priority-page-row" data-page-idx="${idx}" style="margin-bottom:10px; ${isActive ? 'border-right:3px solid var(--color-accent, #4a7dff); padding-right:10px;' : ''}">
           <div class="page-summary-row" style="cursor:pointer; font-weight:700; margin-bottom:4px; display:flex; gap:10px; align-items:center;">
@@ -185,10 +181,9 @@ async function loadPriorityPages(cardId) {
           </div>
           <div class="page-detail" style="display:${isActive ? 'block' : 'none'}; padding-inline-start:20px;">
             ${cashnameHint}
-            ${missingLinesHint}
             <div class="txn-table-wrap">
               <table class="txn-table">
-                <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
+                <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th>${hasLineStatus ? '<th>בפריוריטי</th>' : ''}</tr></thead>
                 <tbody>${txnRows}</tbody>
               </table>
             </div>

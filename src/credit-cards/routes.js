@@ -50,10 +50,10 @@ router.get('/api/credit-cards/:cardId/priority-preview', async (req, res) => {
   if (card.priority_cashname && priorityConfigured()) {
     for (const page of pages) {
       try {
-        const { status, missingCount, missingLines, otherCashnamesOnDate } = await checkCardPageStatus(card.priority_cashname, page);
+        const { status, missingCount, lineMatches, otherCashnamesOnDate } = await checkCardPageStatus(card.priority_cashname, page);
         page.priorityStatus = status;
         page.missingCount = missingCount;
-        if (missingLines?.length) page.missingLines = missingLines;
+        if (lineMatches) page.lines = lineMatches; // replaces page.lines with the same lines annotated with `matched`
         if (otherCashnamesOnDate?.length) page.otherCashnamesOnDate = otherCashnamesOnDate;
       } catch (e) {
         page.priorityStatus = 'unknown';

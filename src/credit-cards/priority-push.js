@@ -159,26 +159,31 @@ export async function fetchExistingCardLines(cashName, curdate) {
  * Matches our expected lines (details text + amount) against what Priority
  * actually has, consuming each existing line at most once so two lines with
  * the same merchant+amount on one page can't both match a single Priority
- * row. Returns the subset of `lines` that are NOT yet in Priority.
+ * row. Returns `lines` in the same order, each annotated with `matched`, so
+ * a caller can show per-row status instead of just an aggregate count.
  */
-export function diffMissingLines(lines, existingLines) {
+export function matchLinesAgainstExisting(lines, existingLines) {
   const pool = existingLines.map(l => ({
     details: normalizeText(l.DETAILS).slice(0, 24),
     credit: Number(l.CREDIT || 0),
     debit: Number(l.DEBIT || 0),
     used: false,
   }));
-  const missing = [];
-  for (const line of lines) {
+  return lines.map(line => {
     const details = normalizeText(line.details).slice(0, 24);
     const credit = line.credit || 0;
     const debit = line.debit || 0;
     const idx = pool.findIndex(p => !p.used && p.details === details
       && Math.abs(p.credit - credit) < 0.01 && Math.abs(p.debit - debit) < 0.01);
-    if (idx === -1) missing.push(line);
-    else pool[idx].used = true;
-  }
-  return missing;
+    if (idx === -1) return { ...line, matched: false };
+    pool[idx].used = true;
+    return { ...line, matched: true };
+  });
+}
+
+/** Convenience wrapper: just the lines matchLinesAgainstExisting found no match for. */
+export function diffMissingLines(lines, existingLines) {
+  return matchLinesAgainstExisting(lines, existingLines).filter(l => !l.matched);
 }
 
 /**
@@ -190,10 +195,12 @@ export function diffMissingLines(lines, existingLines) {
  * other CASHNAMEs found are returned too — a page that looks captured to
  * the eye but a different-looking CASHNAME in Priority is exactly the kind
  * of mismatch normalizeText can't fix silently, so surface it instead.
- * `missingLines` (not just a count) is included on 'partial' so the caller
- * can show exactly which lines the diff thinks are absent — the only way to
- * tell a genuine gap from a text-matching false positive at a glance.
- * Returns { status: 'missing'|'partial'|'complete', missingCount, missingLines?, otherCashnamesOnDate? }.
+ * `lineMatches` (page.lines, same order, each with a `matched` boolean) is
+ * included whenever a page header was found, so the caller can mark every
+ * row individually — the only way to tell a genuine gap from a
+ * text-matching false positive at a glance instead of trusting an aggregate
+ * count.
+ * Returns { status: 'missing'|'partial'|'complete', missingCount, lineMatches?, otherCashnamesOnDate? }.
  */
 export async function checkCardPageStatus(cashName, page) {
   const rows = await fetchBankPagesForDate(page.curdate);
@@ -204,11 +211,12 @@ export async function checkCardPageStatus(cashName, page) {
     return { status: 'missing', missingCount: page.lines.length, otherCashnamesOnDate };
   }
   const existingLines = await fetchExistingCardLines(cashName, page.curdate);
-  const missing = diffMissingLines(page.lines, existingLines);
+  const lineMatches = matchLinesAgainstExisting(page.lines, existingLines);
+  const missingCount = lineMatches.filter(l => !l.matched).length;
   return {
-    status: missing.length === 0 ? 'complete' : 'partial',
-    missingCount: missing.length,
-    missingLines: missing.map(l => ({ details: l.details, credit: l.credit, debit: l.debit })),
+    status: missingCount === 0 ? 'complete' : 'partial',
+    missingCount,
+    lineMatches,
   };
 }
 
