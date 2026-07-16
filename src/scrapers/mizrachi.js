@@ -300,6 +300,7 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         account: maskedNumber,
       });
 
+      try {
       // Switch to this account in the session
       const switchResp = await page.evaluate(async (idx) => {
         const r = await fetch('/Online/api/SkyBL/changeAccount', {
@@ -545,6 +546,14 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         account: maskedNumber,
         count: transactions.length,
       });
+      } catch (e) {
+        // Whole-account safety net — the p428New iframe is unstable (gets
+        // replaced/detached by the SPA unpredictably), and an uncaught error
+        // anywhere in this account's processing (not just the frame-parsing
+        // section below, which has its own try/catch) previously aborted
+        // every remaining account in the sync instead of just this one.
+        onProgress({ step: 'account-error', message: `שגיאה בחשבון ${maskedNumber}: ${e.message}`, account: maskedNumber });
+      }
     }
 
     onProgress({ step: 'done', message: `סיום: ${results.length} חשבונות`, total: results.length });
