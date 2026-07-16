@@ -7,9 +7,9 @@ import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/d
 import {
   upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
   listCards, getCard, getCardTransactions, getPriorityPreviewForCard,
-  setCardPriorityCashname, isPagePushed, recordPagePushed,
+  setCardPriorityCashname, recordPagePushed,
 } from './db.js';
-import { pushCardPageToPriority, priorityConfigured } from './priority-push.js';
+import { pushCardPageToPriority, checkCardPageStatus, priorityConfigured } from './priority-push.js';
 
 // Registry of bank card-scrapers implemented so far. Reuses the same
 // bankRegistry entries from src/scrapers/index.js only for credential shape
@@ -34,11 +34,33 @@ router.get('/api/credit-cards/:cardId/transactions', (req, res) => {
   res.json({ card, transactions });
 });
 
-router.get('/api/credit-cards/:cardId/priority-preview', (req, res) => {
+/**
+ * Preview + LIVE status against Priority itself for every page — never
+ * trusts our own local card_priority_pushes bookkeeping, which is only an
+ * audit log and can't tell whether every line actually landed (see
+ * checkCardPageStatus). This is the fix for the UI claiming a page was
+ * captured when Priority never actually got (all of) its lines.
+ */
+router.get('/api/credit-cards/:cardId/priority-preview', async (req, res) => {
   const cardId = Number(req.params.cardId);
   const card = getCard(cardId);
   if (!card) return res.status(404).json({ error: 'Card not found' });
-  res.json({ card, pages: getPriorityPreviewForCard(cardId) });
+  const pages = getPriorityPreviewForCard(cardId);
+
+  if (card.priority_cashname && priorityConfigured()) {
+    for (const page of pages) {
+      try {
+        const { status, missingCount } = await checkCardPageStatus(card.priority_cashname, page);
+        page.priorityStatus = status;
+        page.missingCount = missingCount;
+      } catch (e) {
+        page.priorityStatus = 'unknown';
+        page.statusError = e.message;
+      }
+    }
+  }
+
+  res.json({ card, pages });
 });
 
 router.put('/api/credit-cards/:cardId/cashname', requireRole('admin'), (req, res) => {
@@ -52,15 +74,18 @@ router.put('/api/credit-cards/:cardId/cashname', requireRole('admin'), (req, res
 });
 
 /**
- * Pushes every not-yet-pushed page for one card. Skips pages already
- * recorded in card_priority_pushes (idempotent — safe to call repeatedly).
+ * Pushes every page for one card, checking Priority itself (via
+ * pushCardPageToPriority's internal diff) rather than our own local
+ * bookkeeping — a page a previous attempt only partially landed gets
+ * topped up here instead of being skipped as "already done". Safe to call
+ * repeatedly: a fully-complete page is a fast no-op (findExistingCardPage +
+ * one BANKLINESA lookup, nothing to POST).
  */
 async function pushCardToPriority(card) {
   const today = new Date().toISOString().slice(0, 10);
-  const pages = getPriorityPreviewForCard(card.id).filter(p => !p.pushed);
+  const pages = getPriorityPreviewForCard(card.id);
   const results = [];
   for (const page of pages) {
-    if (isPagePushed(card.id, page.curdate)) continue; // race guard alongside the .filter above
     // Last line of defense: never push a page dated in the future — a real
     // bank debit can't have happened yet. Confirmed live that stale data
     // from before a scraper fix reached Priority this way once already.
@@ -70,8 +95,12 @@ async function pushCardToPriority(card) {
     }
     try {
       const result = await pushCardPageToPriority(card.priority_cashname, page);
-      recordPagePushed(card.id, page.curdate, result);
-      results.push({ curdate: page.curdate, ok: true, ...result });
+      const ok = result.failed.length === 0;
+      // Only record success once every line is confirmed pushed — recording
+      // on a partial failure is exactly the bug that made the UI claim a
+      // page was captured when it wasn't.
+      if (ok) recordPagePushed(card.id, page.curdate, result);
+      results.push({ curdate: page.curdate, ok, ...result });
     } catch (e) {
       results.push({ curdate: page.curdate, ok: false, error: e.message });
     }

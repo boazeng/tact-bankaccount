@@ -113,27 +113,102 @@ function buildCardLinePayload(line) {
 }
 
 /**
+ * Fetches the bank-lines Priority already has for this CASHNAME+date, so a
+ * retry can tell which of our expected lines are genuinely missing instead
+ * of trusting our own local "pushed" bookkeeping (which drifted from reality
+ * — see the push/check split below).
+ */
+export async function fetchExistingCardLines(cashName, curdate) {
+  const params = new URLSearchParams({
+    '$filter': `CASHNAME eq '${cashName}' and CURDATE ge ${curdate}T00:00:00Z and CURDATE le ${curdate}T23:59:59Z`,
+    '$select': 'DETAILS,CREDIT,DEBIT',
+    '$top': '500',
+  });
+  const r = await fetch(`${PRIORITY_URL}/BANKLINESA?${params}`, { headers: getHeaders });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`BANKLINESA lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value || [];
+}
+
+/**
+ * Matches our expected lines (details text + amount) against what Priority
+ * actually has, consuming each existing line at most once so two lines with
+ * the same merchant+amount on one page can't both match a single Priority
+ * row. Returns the subset of `lines` that are NOT yet in Priority.
+ */
+export function diffMissingLines(lines, existingLines) {
+  const pool = existingLines.map(l => ({
+    details: (l.DETAILS || '').trim(),
+    credit: Number(l.CREDIT || 0),
+    debit: Number(l.DEBIT || 0),
+    used: false,
+  }));
+  const missing = [];
+  for (const line of lines) {
+    const details = line.details.slice(0, 24);
+    const credit = line.credit || 0;
+    const debit = line.debit || 0;
+    const idx = pool.findIndex(p => !p.used && p.details === details
+      && Math.abs(p.credit - credit) < 0.01 && Math.abs(p.debit - debit) < 0.01);
+    if (idx === -1) missing.push(line);
+    else pool[idx].used = true;
+  }
+  return missing;
+}
+
+/**
+ * Live status of one card page against Priority itself — this is what the
+ * UI should show as "נקלט"/"טרם נקלט", NOT our local card_priority_pushes
+ * table, which only records that a push was attempted and can't tell
+ * whether every line actually landed (see pushCardPageToPriority).
+ * Returns { status: 'missing'|'partial'|'complete', missingCount }.
+ */
+export async function checkCardPageStatus(cashName, page) {
+  const existing = await findExistingCardPage(cashName, page.curdate);
+  if (!existing) return { status: 'missing', missingCount: page.lines.length };
+  const existingLines = await fetchExistingCardLines(cashName, page.curdate);
+  const missing = diffMissingLines(page.lines, existingLines);
+  return { status: missing.length === 0 ? 'complete' : 'partial', missingCount: missing.length };
+}
+
+/**
  * Pushes one card's billing-cycle page (from getPriorityPreviewForCard) to
- * Priority: checks Priority itself for an existing page on this CASHNAME+date
- * first (see findExistingCardPage — this is the real duplicate guard, not
- * just our local tracking table), and only creates a new BANKPAGES record
- * and posts lines if none exists yet. Returns
- * { bpyear, cash, bpnum, pushed, failed, alreadyExisted }.
+ * Priority. Checks Priority itself for an existing page on this
+ * CASHNAME+date first (see findExistingCardPage — the real duplicate guard,
+ * not just our local tracking table). If the page already exists, diffs our
+ * expected lines against what's actually there and pushes only what's
+ * missing — a page that was left partial by a previous failed attempt gets
+ * topped up instead of being silently treated as done.
+ * Returns { bpyear, cash, bpnum, pushed, failed, alreadyExisted, hadExistingPage }.
  * Caller is responsible for recording the result (recordPagePushed) — this
  * function only talks to Priority, it doesn't touch our own DB.
  */
 export async function pushCardPageToPriority(cashName, page) {
   const existing = await findExistingCardPage(cashName, page.curdate);
+  let bankPage = existing;
+  let linesToPush = page.lines;
+
   if (existing) {
-    return { bpyear: existing.BPYEAR, cash: existing.CASH, bpnum: existing.BPNUM, pushed: [], failed: [], alreadyExisted: true };
+    const existingLines = await fetchExistingCardLines(cashName, page.curdate);
+    linesToPush = diffMissingLines(page.lines, existingLines);
+    if (linesToPush.length === 0) {
+      return {
+        bpyear: existing.BPYEAR, cash: existing.CASH, bpnum: existing.BPNUM,
+        pushed: [], failed: [], alreadyExisted: true, hadExistingPage: true,
+      };
+    }
+  } else {
+    bankPage = await createCardBankPage(cashName, page.curdate);
   }
 
-  const bankPage = await createCardBankPage(cashName, page.curdate);
   const url = `${PRIORITY_URL}/${bankPageNavPath(bankPage)}`;
 
   const pushed = [];
   const failed = [];
-  for (const line of page.lines) {
+  for (const line of linesToPush) {
     try {
       const r = await fetch(url, {
         method: 'POST',
@@ -156,7 +231,10 @@ export async function pushCardPageToPriority(cashName, page) {
     }
   }
 
-  return { bpyear: bankPage.BPYEAR, cash: bankPage.CASH, bpnum: bankPage.BPNUM, pushed, failed, alreadyExisted: false };
+  return {
+    bpyear: bankPage.BPYEAR, cash: bankPage.CASH, bpnum: bankPage.BPNUM,
+    pushed, failed, alreadyExisted: false, hadExistingPage: !!existing,
+  };
 }
 
 export function priorityConfigured() {

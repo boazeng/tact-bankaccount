@@ -213,10 +213,6 @@ export function getPriorityPreviewForCard(cardId) {
     WHERE card_id = ?
     ORDER BY purchase_date, id
   `).all(cardId);
-  const pushedDates = new Set(
-    db.prepare(`SELECT billing_date FROM card_priority_pushes WHERE card_id = ?`).all(cardId)
-      .map(r => r.billing_date),
-  );
 
   const counts = new Map();
   for (const t of txns) {
@@ -265,21 +261,22 @@ export function getPriorityPreviewForCard(cardId) {
       debit: 0,
       credit: Math.round(netTotal * 100) / 100,
     });
-    pages.push({ curdate, lines, pushed: pushedDates.has(curdate) });
+    pages.push({ curdate, lines });
   }
   return pages.sort((a, b) => a.curdate < b.curdate ? -1 : 1);
 }
 
-const stmtIsPushed = db.prepare(
-  `SELECT 1 FROM card_priority_pushes WHERE card_id = ? AND billing_date = ?`,
-);
-export function isPagePushed(cardId, billingDate) {
-  return !!stmtIsPushed.get(cardId, billingDate);
-}
-
+// Audit log only — NOT the source of truth for "is this page fully in
+// Priority" (see checkCardPageStatus in priority-push.js, which asks
+// Priority itself). Upsert because a page can legitimately be recorded here
+// more than once: a first push that lands only some lines, followed later by
+// a top-up push that fills in the rest.
 const stmtRecordPush = db.prepare(`
   INSERT INTO card_priority_pushes (card_id, billing_date, bpyear, cash, bpnum)
   VALUES (@card_id, @billing_date, @bpyear, @cash, @bpnum)
+  ON CONFLICT(card_id, billing_date) DO UPDATE SET
+    bpyear = excluded.bpyear, cash = excluded.cash, bpnum = excluded.bpnum,
+    pushed_at = datetime('now')
 `);
 export function recordPagePushed(cardId, billingDate, { bpyear, cash, bpnum }) {
   stmtRecordPush.run({ card_id: cardId, billing_date: billingDate, bpyear, cash: String(cash), bpnum: String(bpnum) });

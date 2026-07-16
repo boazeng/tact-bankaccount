@@ -123,9 +123,12 @@ async function loadPriorityPages(cardId) {
             <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
           </tr>
         `).join('');
-        const pushedBadge = page.pushed
-          ? '<span style="color:var(--color-pos); font-weight:700;">✓ נקלט בפריוריטי</span>'
-          : '<span style="color:var(--color-text-light);">טרם נקלט</span>';
+        const pushedBadge = ({
+          complete: '<span style="color:var(--color-pos); font-weight:700;">✓ נקלט בפריוריטי</span>',
+          partial: `<span style="color:#c77700; font-weight:700;">⚠ נקלט חלקית — ${page.missingCount} שורות חסרות</span>`,
+          missing: '<span style="color:var(--color-text-light);">טרם נקלט</span>',
+          unknown: `<span style="color:var(--color-neg);">שגיאה בבדיקת סטטוס${page.statusError ? ': ' + escapeHtml(page.statusError) : ''}</span>`,
+        })[page.priorityStatus] || '<span style="color:var(--color-text-light);">יש להגדיר קופה כדי לבדוק סטטוס</span>';
         return `
           <div style="margin-bottom:16px;">
             <div style="font-weight:700; margin-bottom:6px; display:flex; gap:10px; align-items:center;">
@@ -186,10 +189,12 @@ async function pushCardToPriority(cardId) {
       status.style.color = 'var(--color-neg)';
     } else {
       const existed = data.results.filter(r => r.alreadyExisted).length;
-      const created = data.results.length - existed;
+      const filled = data.results.filter(r => r.hadExistingPage && !r.alreadyExisted).length;
+      const created = data.results.length - existed - filled;
       const parts = [];
       if (created) parts.push(`${created} דפים חדשים נקלטו`);
-      if (existed) parts.push(`${existed} כבר היו קיימים בפריוריטי (לא נוצרו כפולים)`);
+      if (filled) parts.push(`${filled} דפים חלקיים הושלמו`);
+      if (existed) parts.push(`${existed} כבר היו מלאים בפריוריטי (לא נוצרו כפולים)`);
       status.textContent = '✓ ' + parts.join(', ');
       status.style.color = 'var(--color-pos)';
     }
