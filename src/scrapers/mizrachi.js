@@ -263,6 +263,21 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       const rows = txnBody?.body?.table?.rows ?? [];
       const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
 
+      // Diagnostic for the "valid JSON but zero transactions" case — distinct
+      // from the non-JSON interstitial-gate case above (already fixed,
+      // 2026-07-05). If the bank's response shape changed, rows would come
+      // back non-empty but the RecTypeSpecified/MC02PeulaTaaEZSpecified filter
+      // could silently drop everything with no error raised anywhere. Only
+      // fires in the ambiguous case so normal syncs stay quiet.
+      if (!realRows.length) {
+        onProgress({
+          step: 'debug-txn-shape',
+          message: `[DEBUG] ${maskedNumber}: bodyKeys=${Object.keys(txnBody).join(',')} rows=${rows.length} realRows=0` +
+            (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')} firstRow=${JSON.stringify(rows[0]).slice(0, 800)}` : ' (rows array itself is empty)'),
+          account: maskedNumber,
+        });
+      }
+
       const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
       const transactions = realRows.map(r => {
         const amountRaw = Number(String(r.MC02SchumEZ || 0).replace(/,/g, ''));
