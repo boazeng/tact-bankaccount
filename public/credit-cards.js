@@ -116,10 +116,11 @@ function pageStatusBadge(page) {
 /**
  * Each card page stands alone (its own detail lines + closing "תשלום בפועל
  * בבנק" line that nets it to zero) — once one is fully in Priority there's
- * nothing left to look at there; the only page worth full attention is the
- * next un-captured one. So pages render as a collapsed one-line list, with
- * only the first non-'complete' page auto-expanded to its full detail.
- * Any row can still be clicked to expand/collapse manually.
+ * nothing left to look at there. So a 'complete' page collapses to a
+ * one-line summary; EVERY page that still needs attention (missing OR
+ * partial OR unknown) stays expanded — a false/real gap on an earlier page
+ * must never hide a later page (e.g. next month's statement) that's simply
+ * waiting its own turn. Any row can still be clicked to expand/collapse.
  */
 async function loadPriorityPages(cardId) {
   const el = document.querySelector(`.card-item[data-card-id="${cardId}"] .priority-pages`);
@@ -135,15 +136,14 @@ async function loadPriorityPages(cardId) {
       return;
     }
 
-    const activeIdx = pages.findIndex(p => p.priorityStatus !== 'complete');
-    const allDone = activeIdx === -1;
+    const allDone = pages.every(p => p.priorityStatus === 'complete');
 
     const banner = allDone
       ? `<p style="color:var(--color-pos); font-weight:700; margin-bottom:12px;">✓ כל הדפים נקלטו במלואם בפריוריטי</p>`
       : '';
 
     const rowsHtml = pages.map((page, idx) => {
-      const isActive = idx === activeIdx;
+      const isActive = page.priorityStatus !== 'complete';
       const txnRows = page.lines.map(l => `
         <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
           <td>${escapeHtml(l.curdate)}</td>
@@ -164,6 +164,18 @@ async function loadPriorityPages(cardId) {
             — ודאי שהקופה שהוגדרה כאן ("${escapeHtml(card?.priority_cashname || '')}") תואמת בדיוק.
           </div>`
         : '';
+      // Lists exactly which lines the diff thinks are missing — lets you
+      // tell a genuine gap from a text-matching false positive at a glance
+      // (e.g. a line that's clearly already in Priority under a slightly
+      // different merchant-name spelling).
+      const missingLinesHint = page.priorityStatus === 'partial' && page.missingLines?.length
+        ? `<div style="font-size:.85rem; color:#c77700; margin:6px 0;">
+            שורות שלפי הבדיקה חסרות בפריוריטי:
+            <ul style="margin:4px 0 0; padding-inline-start:20px;">
+              ${page.missingLines.map(l => `<li>${escapeHtml(l.details)} — ${fmtMoney(l.credit || -l.debit)}</li>`).join('')}
+            </ul>
+          </div>`
+        : '';
       return `
         <div class="priority-page-row" data-page-idx="${idx}" style="margin-bottom:10px; ${isActive ? 'border-right:3px solid var(--color-accent, #4a7dff); padding-right:10px;' : ''}">
           <div class="page-summary-row" style="cursor:pointer; font-weight:700; margin-bottom:4px; display:flex; gap:10px; align-items:center;">
@@ -173,6 +185,7 @@ async function loadPriorityPages(cardId) {
           </div>
           <div class="page-detail" style="display:${isActive ? 'block' : 'none'}; padding-inline-start:20px;">
             ${cashnameHint}
+            ${missingLinesHint}
             <div class="txn-table-wrap">
               <table class="txn-table">
                 <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>

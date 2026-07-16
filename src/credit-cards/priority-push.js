@@ -44,19 +44,19 @@ async function nextRunningPageNumber(cashName, year) {
   return (Number.isFinite(n) ? n : 0) + 1;
 }
 
-// Collapses internal whitespace runs and trims — a CASHNAME that looks
-// identical on screen can still fail an OData `eq` filter over a trailing
-// space, a double space, or other invisible whitespace difference picked up
-// wherever the value was originally typed into Priority. Comparing
-// normalized text client-side instead of filtering by CASHNAME server-side
-// is what actually makes the match reliable.
-function normalizeCashName(s) {
+// Collapses internal whitespace runs and trims — text that looks identical
+// on screen (a CASHNAME, a line's DETAILS) can still fail an exact-string
+// match over a trailing space, a double space, or other invisible
+// whitespace difference picked up wherever the value was originally typed
+// into Priority. Used for both CASHNAME matching and line-DETAILS matching
+// below, for the same reason in both places.
+function normalizeText(s) {
   return String(s || '').replace(/\s+/g, ' ').trim();
 }
 
 /**
  * All BANKPAGES rows for a given date, across every CASHNAME — deliberately
- * NOT filtered by CASHNAME server-side (see normalizeCashName). Callers
+ * NOT filtered by CASHNAME server-side (see normalizeText). Callers
  * match the CASHNAME they care about themselves.
  */
 async function fetchBankPagesForDate(curdate) {
@@ -83,8 +83,8 @@ async function fetchBankPagesForDate(curdate) {
  */
 export async function findExistingCardPage(cashName, curdate) {
   const rows = await fetchBankPagesForDate(curdate);
-  const target = normalizeCashName(cashName);
-  const match = rows.find(row => normalizeCashName(row.CASHNAME) === target);
+  const target = normalizeText(cashName);
+  const match = rows.find(row => normalizeText(row.CASHNAME) === target);
   if (!match) return null;
   const { BPYEAR, CASH, BPNUM } = match;
   return { BPYEAR, CASH, BPNUM };
@@ -151,8 +151,8 @@ export async function fetchExistingCardLines(cashName, curdate) {
     throw new Error(`BANKLINESA lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
   }
   const data = await r.json();
-  const target = normalizeCashName(cashName);
-  return (data.value || []).filter(l => normalizeCashName(l.CASHNAME) === target);
+  const target = normalizeText(cashName);
+  return (data.value || []).filter(l => normalizeText(l.CASHNAME) === target);
 }
 
 /**
@@ -163,14 +163,14 @@ export async function fetchExistingCardLines(cashName, curdate) {
  */
 export function diffMissingLines(lines, existingLines) {
   const pool = existingLines.map(l => ({
-    details: (l.DETAILS || '').trim(),
+    details: normalizeText(l.DETAILS).slice(0, 24),
     credit: Number(l.CREDIT || 0),
     debit: Number(l.DEBIT || 0),
     used: false,
   }));
   const missing = [];
   for (const line of lines) {
-    const details = line.details.slice(0, 24);
+    const details = normalizeText(line.details).slice(0, 24);
     const credit = line.credit || 0;
     const debit = line.debit || 0;
     const idx = pool.findIndex(p => !p.used && p.details === details
@@ -189,20 +189,27 @@ export function diffMissingLines(lines, existingLines) {
  * When nothing matches but Priority DOES have other pages on that date, the
  * other CASHNAMEs found are returned too — a page that looks captured to
  * the eye but a different-looking CASHNAME in Priority is exactly the kind
- * of mismatch normalizeCashName can't fix silently, so surface it instead.
- * Returns { status: 'missing'|'partial'|'complete', missingCount, otherCashnamesOnDate? }.
+ * of mismatch normalizeText can't fix silently, so surface it instead.
+ * `missingLines` (not just a count) is included on 'partial' so the caller
+ * can show exactly which lines the diff thinks are absent — the only way to
+ * tell a genuine gap from a text-matching false positive at a glance.
+ * Returns { status: 'missing'|'partial'|'complete', missingCount, missingLines?, otherCashnamesOnDate? }.
  */
 export async function checkCardPageStatus(cashName, page) {
   const rows = await fetchBankPagesForDate(page.curdate);
-  const target = normalizeCashName(cashName);
-  const existing = rows.find(row => normalizeCashName(row.CASHNAME) === target);
+  const target = normalizeText(cashName);
+  const existing = rows.find(row => normalizeText(row.CASHNAME) === target);
   if (!existing) {
     const otherCashnamesOnDate = [...new Set(rows.map(r => r.CASHNAME).filter(Boolean))];
     return { status: 'missing', missingCount: page.lines.length, otherCashnamesOnDate };
   }
   const existingLines = await fetchExistingCardLines(cashName, page.curdate);
   const missing = diffMissingLines(page.lines, existingLines);
-  return { status: missing.length === 0 ? 'complete' : 'partial', missingCount: missing.length };
+  return {
+    status: missing.length === 0 ? 'complete' : 'partial',
+    missingCount: missing.length,
+    missingLines: missing.map(l => ({ details: l.details, credit: l.credit, debit: l.debit })),
+  };
 }
 
 /**
