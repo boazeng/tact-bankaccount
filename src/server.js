@@ -19,7 +19,7 @@ import {
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
   setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
-  getEndOfDayBalance, getFirstTransactionDate, getTransactionDatesInRange,
+  getEndOfDayBalance, getLastBalanceBefore, getFirstTransactionDate, getTransactionDatesInRange,
   getTransactionsForBalanceCheck,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
 } from './db.js';
@@ -761,21 +761,24 @@ app.post('/api/accounts/:id/reconcile-priority', requireRole('approver'), async 
           availableFields: Object.keys(lastPage).filter(k => !k.startsWith('@')),
         });
       }
-      const prevDate = shiftDate(lastLoadedDate, -1);
-      const ourPrevBal = getEndOfDayBalance(accountId, prevDate);
+      // Balance as of the most recent transaction before the last loaded page —
+      // NOT necessarily the calendar day before (gaps of several days with no
+      // activity are normal; anchoring on a fixed "date - 1" silently fails then).
+      const ourPrevBal = getLastBalanceBefore(accountId, lastLoadedDate);
       if (!ourPrevBal) {
-        return res.json({ ok: false, cashName, stage: 'anchor-no-local-data', lastLoadedDate, prevDate });
+        return res.json({ ok: false, cashName, stage: 'anchor-no-local-data', lastLoadedDate });
       }
       const priorityOpenBalance = Number(lastPage[openField]);
       const ourBalance = ourPrevBal.running_balance;
+      const ourBalanceDate = ourPrevBal.date;
       const diff = Math.abs(priorityOpenBalance - ourBalance);
       if (diff >= 0.01) {
         return res.json({
-          ok: false, cashName, stage: 'anchor-mismatch', lastLoadedDate, prevDate,
+          ok: false, cashName, stage: 'anchor-mismatch', lastLoadedDate, ourBalanceDate,
           priorityOpenBalance, ourBalance, diff,
         });
       }
-      anchor = { skipped: false, lastLoadedDate, priorityOpenBalance, ourBalance, matched: true };
+      anchor = { skipped: false, lastLoadedDate, ourBalanceDate, priorityOpenBalance, ourBalance, matched: true };
       fromDate = shiftDate(lastLoadedDate, 1);
     }
 

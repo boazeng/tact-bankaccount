@@ -1182,14 +1182,14 @@ function renderReconcileAnchor(anchor) {
     return `<div class="push-stat">⚠ אין דף קודם בפריוריטי לקופה זו — מתחילים מהתנועה המקומית הראשונה</div>`;
   }
   return `<div class="push-stat">✓ עוגן תואם ב-${fmtDate(anchor.lastLoadedDate)}
-    (יתרת פתיחה ${fmtMoney(anchor.priorityOpenBalance)} = יתרתנו ${fmtMoney(anchor.ourBalance)})</div>`;
+    (יתרת פתיחה ${fmtMoney(anchor.priorityOpenBalance)} = יתרתנו ב-${fmtDate(anchor.ourBalanceDate)}: ${fmtMoney(anchor.ourBalance)})</div>`;
 }
 
 function renderReconcileAnchorFailure(data) {
   const stageText = {
     'anchor-field-missing': `לא נמצא שדה "יתרת פתיחה" מזוהה בדף האחרון (${fmtDate(data.lastLoadedDate)}) בפריוריטי`,
-    'anchor-no-local-data': `אין יתרה מקומית לתאריך ${fmtDate(data.prevDate)} (היום שלפני הדף האחרון) — אי אפשר לאמת עוגן`,
-    'anchor-mismatch': `יתרת הפתיחה בפריוריטי ל-${fmtDate(data.lastLoadedDate)} (${fmtMoney(data.priorityOpenBalance)}) לא תואמת ליתרתנו ל-${fmtDate(data.prevDate)} (${fmtMoney(data.ourBalance)}) — הפרש ${fmtMoney(data.diff)}`,
+    'anchor-no-local-data': `אין אצלנו אף תנועה עם יתרה לפני ${fmtDate(data.lastLoadedDate)} — אי אפשר לאמת עוגן`,
+    'anchor-mismatch': `יתרת הפתיחה בפריוריטי ל-${fmtDate(data.lastLoadedDate)} (${fmtMoney(data.priorityOpenBalance)}) לא תואמת ליתרתנו ב-${fmtDate(data.ourBalanceDate)} (${fmtMoney(data.ourBalance)}) — הפרש ${fmtMoney(data.diff)}`,
   };
   const detail = stageText[data.stage] || data.stage;
   return `<div class="push-result-card" style="border-color:var(--color-neg)">

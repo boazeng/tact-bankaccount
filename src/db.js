@@ -489,6 +489,18 @@ export function getEndOfDayBalance(accountId, date) {
   `).get(accountId, date);
 }
 
+// Balance as of the most recent transaction strictly before `date` — NOT
+// necessarily the calendar day before. Gaps of several days with no activity
+// are normal (weekends, quiet accounts), so anchoring on a fixed "date - 1"
+// silently fails whenever that exact day has no transactions.
+export function getLastBalanceBefore(accountId, date) {
+  return db.prepare(`
+    SELECT date, running_balance FROM transactions
+    WHERE account_id = ? AND date < ? AND running_balance IS NOT NULL
+    ORDER BY date DESC, id DESC LIMIT 1
+  `).get(accountId, date);
+}
+
 export function getTransactionsForBalanceCheck(accountId) {
   return db.prepare(`
     SELECT id, date, amount, running_balance
