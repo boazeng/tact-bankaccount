@@ -232,11 +232,11 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
           const cookieNames = await page.evaluate(() => document.cookie.split(';').map(c => c.split('=')[0].trim()).filter(Boolean));
           const outDir = path.resolve('output');
           fs.mkdirSync(outDir, { recursive: true });
-          const shotPath = path.join(outDir, `mizrachi-debug-${Date.now()}.png`);
-          await page.screenshot({ path: shotPath, fullPage: true }).catch(() => {});
+          const shotName = `mizrachi-debug-${Date.now()}.png`;
+          await page.screenshot({ path: path.join(outDir, shotName), fullPage: true }).catch(() => {});
           onProgress({
             step: 'debug-pre-get428',
-            message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} screenshot=${shotPath}`,
+            message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} — צילום מסך: /api/debug/screenshots/${shotName}`,
             account: maskedNumber,
           });
         } catch (e) {

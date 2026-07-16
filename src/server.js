@@ -524,6 +524,30 @@ app.get('/api/accounts/:id/priority-lines-debug', requireRole('approver'), async
   }
 });
 
+// Debug: list/serve screenshots captured by scrapers for diagnosing bank-side
+// issues (e.g. the Mizrachi bot-manager investigation). output/ is not a
+// persistent Docker volume, so this exposes the files over HTTP instead of
+// requiring terminal/docker access to the host to retrieve them.
+app.get('/api/debug/screenshots', requireRole('approver'), (req, res) => {
+  const outDir = path.resolve('output');
+  let files = [];
+  try {
+    files = fs.readdirSync(outDir)
+      .filter(f => f.endsWith('.png'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(outDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+  } catch {}
+  res.json({ files: files.map(f => ({ name: f.name, url: `/api/debug/screenshots/${encodeURIComponent(f.name)}` })) });
+});
+
+app.get('/api/debug/screenshots/:name', requireRole('approver'), (req, res) => {
+  const name = req.params.name;
+  if (!/^[\w.-]+\.png$/.test(name)) return res.status(400).json({ error: 'Invalid filename' });
+  const filePath = path.join(path.resolve('output'), name);
+  if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'Not found' });
+  res.sendFile(filePath);
+});
+
 app.get('/api/priority/cash-banks', requireRole('approver'), async (req, res) => {
   if (!priorityConfigured()) {
     return res.status(500).json({ error: 'Priority not configured in env' });
