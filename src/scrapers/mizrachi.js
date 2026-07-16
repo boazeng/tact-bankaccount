@@ -10,8 +10,6 @@
 //   6. For each account: changeAccount(index) → get428Index (transactions).
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
-import fs from 'node:fs';
-import path from 'node:path';
 
 // Mizrachi's get428Index (transactions) endpoint sits behind Radware Bot
 // Manager, which was bouncing every request with a SiteMinder re-auth
@@ -225,18 +223,17 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       // One-time diagnostic (first account only) for the "get428Index always
       // bounces with errorcode=198" investigation — captures what a real
       // browser would actually be showing/holding right before the blocked
-      // call, since this runs headless on a remote box with no way to watch
-      // it live. Screenshot saved to disk; cookie *names* only (not values).
+      // call. Visible text goes straight into the progress log (same channel
+      // that already successfully shows the blocked-response HTML) instead of
+      // a screenshot file — a content filter on the user's network was
+      // blocking image delivery entirely, so plain text is the reliable path.
       if (i === 0) {
         try {
           const cookieNames = await page.evaluate(() => document.cookie.split(';').map(c => c.split('=')[0].trim()).filter(Boolean));
-          const outDir = path.resolve('output');
-          fs.mkdirSync(outDir, { recursive: true });
-          const shotName = `mizrachi-debug-${Date.now()}.png`;
-          await page.screenshot({ path: path.join(outDir, shotName), fullPage: true }).catch(() => {});
+          const pageText = await page.evaluate(() => document.body ? document.body.innerText : '');
           onProgress({
             step: 'debug-pre-get428',
-            message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} — צילום מסך: /api/debug/screenshots/${shotName}`,
+            message: `[DEBUG] לפני get428Index: url=${page.url()} cookieNames=${cookieNames.join(',')} — טקסט גלוי בעמוד: ${(pageText || '').trim().slice(0, 2000) || '(העמוד ריק מטקסט)'}`,
             account: maskedNumber,
           });
         } catch (e) {
