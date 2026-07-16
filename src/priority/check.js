@@ -56,10 +56,14 @@ export const shiftDate = (dateStr, days) => {
 /**
  * Match our transactions against Priority's BANKLINESA.
  *
- * When cashName is provided (preferred): uses day-level matching —
- *   if Priority has ANY entry for that CASHNAME on a given date (±1 day),
- *   all our transactions on that date are marked as in Priority.
- *   This mirrors how bookkeepers work: they import full days, not individual lines.
+ * When cashName is provided (preferred): finds a "balance fence" date (the
+ * latest date where Priority's closing balance matches ours) and trusts
+ * everything on/before it as present. After the fence, matches each
+ * transaction individually by exact-date amount, consuming each Priority
+ * line at most once so two same-amount transactions on one date can't both
+ * match a single Priority entry. Tries effective_date first, then date, since
+ * bookkeepers commonly enter manual lines under the value date while our own
+ * pushes write CURDATE as the registration date.
  *
  * When cashName is null: falls back to date+amount matching (legacy).
  *
@@ -162,14 +166,30 @@ export async function checkAgainstPriority(ourTxns, cashName = null) {
         updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(txn.date) || null });
         continue;
       }
-      const checkDate = txn.effective_date || txn.date;
       const txnAmount = Number(txn.amount);
-      const available = availableByDate.get(checkDate);
-      const idx = available ? available.findIndex(a => Math.abs(a - txnAmount) < 0.005) : -1;
-      if (idx !== -1) {
-        available.splice(idx, 1); // consume so it can't match a second transaction
+      // Try effective_date first (how a bookkeeper typically enters a manual
+      // line — under the value date), then fall back to the registration date
+      // (what buildBankLinePayload actually writes as CURDATE when *we* push).
+      // Without the fallback, a transaction we ourselves pushed under `date`
+      // is invisible to the next check whenever effective_date != date, so it
+      // reads as still-missing and gets pushed again — a guaranteed duplicate
+      // on every second "קלוט" run for any transaction with a value-date shift.
+      const candidateDates = txn.effective_date && txn.effective_date !== txn.date
+        ? [txn.effective_date, txn.date]
+        : [txn.date];
+      let matchedDate = null;
+      for (const cd of candidateDates) {
+        const available = availableByDate.get(cd);
+        const idx = available ? available.findIndex(a => Math.abs(a - txnAmount) < 0.005) : -1;
+        if (idx !== -1) {
+          available.splice(idx, 1); // consume so it can't match a second transaction
+          matchedDate = cd;
+          break;
+        }
+      }
+      if (matchedDate) {
         matched++;
-        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(checkDate) || null });
+        updates.push({ id: txn.id, inPriority: 1, bankpage: dateToBankpage.get(matchedDate) || null });
       } else {
         updates.push({ id: txn.id, inPriority: 0, bankpage: null });
       }
