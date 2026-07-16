@@ -6,6 +6,59 @@ const ENTRIES_PAGE = 'https://start.telebank.co.il/apollo/business2/#/OSH_LENTRI
 
 const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
 const ymdToIso = (s) => (s && s.length === 8) ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}` : (s || null);
+const parseYmd = (s) => new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+
+// Discount's transactions endpoint caps how many rows it returns per request and
+// signals truncation via AdditionalTransactions='True' instead of paginating —
+// so a wide date range on a busy account silently drops the older rows in it.
+// When that happens, bisect the range and re-fetch each half until either the
+// flag clears or we're down to a single day (can't split further).
+const MIN_WINDOW_DAYS = 1;
+
+function splitRange(fromStr, toStr) {
+  const fromD = parseYmd(fromStr);
+  const toD = parseYmd(toStr);
+  const midD = new Date(fromD.getTime() + Math.floor((toD - fromD) / 2));
+  const nextD = new Date(midD);
+  nextD.setDate(nextD.getDate() + 1);
+  return { leftTo: ymd(midD), rightFrom: ymd(nextD) };
+}
+
+async function fetchDiscountBatch(page, accNum, from, to, tplHeaders, includeInfo) {
+  return page.evaluate(async (accNum, from, to, tplHeaders, includeInfo) => {
+    const headers = { ...tplHeaders, accountnumber: accNum };
+    const txnPromise = fetch(
+      `/Titan/gatewayAPI/lastTransactions/transactions/${accNum}/ByDate?FromDate=${from}&ToDate=${to}&IsTransactionDetails=True&IsFutureTransactionFlag=True&IsEventNames=True&IsCategoryDescCode=True`,
+      { credentials: 'include', headers },
+    );
+    const infoPromise = includeInfo
+      ? fetch(`/Titan/gatewayAPI/accountDetails/infoAndBalance/${accNum}`, { credentials: 'include', headers })
+      : null;
+    const [txnRes, infoRes] = await Promise.all([txnPromise, infoPromise]);
+    return {
+      txn: txnRes.ok ? await txnRes.json() : null,
+      txnStatus: txnRes.status,
+      info: infoRes && infoRes.ok ? await infoRes.json() : null,
+      infoStatus: infoRes ? infoRes.status : null,
+    };
+  }, accNum, from, to, tplHeaders, includeInfo);
+}
+
+async function fetchAllOperations(page, accNum, fromStr, toStr, tplHeaders, onProgress, topResp) {
+  const resp = topResp ?? await fetchDiscountBatch(page, accNum, fromStr, toStr, tplHeaders, false);
+  if (resp.txnStatus !== 200 || !resp.txn) return { status: resp.txnStatus, operations: [], flagged: false };
+  const operations = resp.txn?.CurrentAccountLastTransactions?.OperationEntry ?? [];
+  const flagged = resp.txn?.CurrentAccountLastTransactions?.AdditionalTransactions === 'True';
+  const spanDays = Math.round((parseYmd(toStr) - parseYmd(fromStr)) / 86_400_000) + 1;
+  if (!flagged || spanDays <= MIN_WINDOW_DAYS) {
+    return { status: 200, operations, flagged };
+  }
+  const { leftTo, rightFrom } = splitRange(fromStr, toStr);
+  onProgress({ step: 'pagination-split', message: `יותר תנועות מהצפוי בטווח ${fromStr}–${toStr} — מפצל לשתי בקשות` });
+  const left = await fetchAllOperations(page, accNum, fromStr, leftTo, tplHeaders, onProgress);
+  const right = await fetchAllOperations(page, accNum, rightFrom, toStr, tplHeaders, onProgress);
+  return { status: 200, operations: [...left.operations, ...right.operations], flagged: left.flagged || right.flagged };
+}
 
 export async function scrapeDiscount({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {} }) {
   const { userId, password, loginUrl } = credentials;
@@ -120,22 +173,7 @@ export async function scrapeDiscount({ credentials, daysBack = 30, showBrowser =
         account: maskedNumber,
       });
 
-      const resp = await page.evaluate(async (accNum, from, to, tplHeaders) => {
-        const headers = { ...tplHeaders, accountnumber: accNum };
-        const [infoRes, txnRes] = await Promise.all([
-          fetch(`/Titan/gatewayAPI/accountDetails/infoAndBalance/${accNum}`, { credentials: 'include', headers }),
-          fetch(
-            `/Titan/gatewayAPI/lastTransactions/transactions/${accNum}/ByDate?FromDate=${from}&ToDate=${to}&IsTransactionDetails=True&IsFutureTransactionFlag=True&IsEventNames=True&IsCategoryDescCode=True`,
-            { credentials: 'include', headers },
-          ),
-        ]);
-        return {
-          info: infoRes.ok ? await infoRes.json() : null,
-          infoStatus: infoRes.status,
-          txn: txnRes.ok ? await txnRes.json() : null,
-          txnStatus: txnRes.status,
-        };
-      }, accountNumber, fromStr, toStr, templateHeaders);
+      const resp = await fetchDiscountBatch(page, accountNumber, fromStr, toStr, templateHeaders, true);
 
       if (resp.txnStatus !== 200) {
         onProgress({
@@ -147,7 +185,14 @@ export async function scrapeDiscount({ credentials, daysBack = 30, showBrowser =
       }
 
       const accInfo = resp.info?.AccountInfoAndBalance ?? {};
-      const operations = resp.txn?.CurrentAccountLastTransactions?.OperationEntry ?? [];
+      const { operations, flagged } = await fetchAllOperations(page, accountNumber, fromStr, toStr, templateHeaders, onProgress, resp);
+      if (flagged) {
+        onProgress({
+          step: 'pagination-incomplete',
+          message: `⚠ ${maskedNumber}: ייתכן שעדיין חסרות תנועות — יום בודד חורג ממגבלת הבנק`,
+          account: maskedNumber,
+        });
+      }
 
       const transactions = operations.map(op => ({
         // Discount uses the same Urn for a transfer AND its associated fee
@@ -178,7 +223,7 @@ export async function scrapeDiscount({ credentials, daysBack = 30, showBrowser =
           branchName: accInfo.HandlingBranchName ?? null,
         },
         transactions: { history: transactions, pending: [] },
-        additionalTransactionsFlag: resp.txn?.CurrentAccountLastTransactions?.AdditionalTransactions === 'True',
+        additionalTransactionsFlag: flagged,
       });
 
       onProgress({

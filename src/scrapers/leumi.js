@@ -4,6 +4,53 @@ const ACCOUNTS_URL_FRAG = '/available-accounts/ils';
 const TXN_DEFAULT_FRAG = '/transactions/default';
 
 const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+const parseYmd = (s) => new Date(Number(s.slice(0, 4)), Number(s.slice(4, 6)) - 1, Number(s.slice(6, 8)));
+
+// Leumi's transactions endpoint caps how many rows it returns per request and
+// signals truncation via additionalTransactionsFlag instead of paginating —
+// so a wide date range on a busy account silently drops the older rows in it.
+// When that happens, bisect the range and re-fetch each half until either the
+// flag clears or we're down to a single day (can't split further).
+const MIN_WINDOW_DAYS = 1;
+
+function splitRange(fromStr, toStr) {
+  const fromD = parseYmd(fromStr);
+  const toD = parseYmd(toStr);
+  const midD = new Date(fromD.getTime() + Math.floor((toD - fromD) / 2));
+  const nextD = new Date(midD);
+  nextD.setDate(nextD.getDate() + 1);
+  return { leftTo: ymd(midD), rightFrom: ymd(nextD) };
+}
+
+async function fetchLeumiHistory(page, idx, from, to, tplHeaders) {
+  return page.evaluate(async (idx, from, to, tplHeaders) => {
+    const headers = { ...tplHeaders };
+    if (headers['x-message-id']) headers['x-message-id'] = crypto.randomUUID();
+    if (headers['x-transaction-id']) headers['x-transaction-id'] = crypto.randomUUID();
+    const r = await fetch(
+      `/v1/corp/ui-corp-transactions/transactionsbydates/digitalfront/accounts/${idx}/transactions/bydates?periodType=1&fromDate=${from}&toDate=${to}`,
+      { credentials: 'include', headers },
+    );
+    return { status: r.status, body: r.ok ? await r.json() : await r.text() };
+  }, idx, from, to, tplHeaders);
+}
+
+async function fetchAllHistory(page, idx, fromStr, toStr, tplHeaders, onProgress, topResp) {
+  const resp = topResp ?? await fetchLeumiHistory(page, idx, fromStr, toStr, tplHeaders);
+  if (resp.status !== 200) return { status: resp.status, history: [], flagged: false, body: resp.body };
+  const body = resp.body;
+  const history = body.historyILSTrxItems ?? [];
+  const flagged = body.additionalTransactionsFlag === true;
+  const spanDays = Math.round((parseYmd(toStr) - parseYmd(fromStr)) / 86_400_000) + 1;
+  if (!flagged || spanDays <= MIN_WINDOW_DAYS) {
+    return { status: 200, history, flagged, body };
+  }
+  const { leftTo, rightFrom } = splitRange(fromStr, toStr);
+  onProgress({ step: 'pagination-split', message: `יותר תנועות מהצפוי בטווח ${fromStr}–${toStr} — מפצל לשתי בקשות` });
+  const left = await fetchAllHistory(page, idx, fromStr, leftTo, tplHeaders, onProgress);
+  const right = await fetchAllHistory(page, idx, rightFrom, toStr, tplHeaders, onProgress);
+  return { status: 200, history: [...left.history, ...right.history], flagged: left.flagged || right.flagged, body };
+}
 
 export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {} }) {
   const { username, password, loginUrl } = credentials;
@@ -81,16 +128,7 @@ export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = fa
         account: acc.maskedClientNumber,
       });
 
-      const resp = await page.evaluate(async (idx, from, to, tplHeaders) => {
-        const headers = { ...tplHeaders };
-        if (headers['x-message-id']) headers['x-message-id'] = crypto.randomUUID();
-        if (headers['x-transaction-id']) headers['x-transaction-id'] = crypto.randomUUID();
-        const r = await fetch(
-          `/v1/corp/ui-corp-transactions/transactionsbydates/digitalfront/accounts/${idx}/transactions/bydates?periodType=1&fromDate=${from}&toDate=${to}`,
-          { credentials: 'include', headers },
-        );
-        return { status: r.status, body: r.ok ? await r.json() : await r.text() };
-      }, acc.accountIndex, fromStr, toStr, templateHeaders);
+      const resp = await fetchLeumiHistory(page, acc.accountIndex, fromStr, toStr, templateHeaders);
 
       if (resp.status !== 200) {
         onProgress({ step: 'account-error', message: `שגיאה בחשבון ${acc.maskedClientNumber}: HTTP ${resp.status}`, account: acc.maskedClientNumber });
@@ -98,8 +136,15 @@ export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = fa
       }
 
       const body = resp.body;
-      const history = body.historyILSTrxItems ?? [];
       const pending = body.todayILSTrxItems ?? body.pendingILSTrxItems ?? [];
+      const { history, flagged } = await fetchAllHistory(page, acc.accountIndex, fromStr, toStr, templateHeaders, onProgress, resp);
+      if (flagged) {
+        onProgress({
+          step: 'pagination-incomplete',
+          message: `⚠ ${acc.maskedClientNumber}: ייתכן שעדיין חסרות תנועות — יום בודד חורג ממגבלת הבנק`,
+          account: acc.maskedClientNumber,
+        });
+      }
 
       // masked_number for Leumi is "855-11200/06" → branch 855
       const branchId = (acc.maskedClientNumber || '').split('-')[0] || null;
@@ -114,7 +159,7 @@ export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = fa
           branchName: null,
         },
         transactions: { history, pending },
-        additionalTransactionsFlag: body.additionalTransactionsFlag === true,
+        additionalTransactionsFlag: flagged,
       });
 
       onProgress({

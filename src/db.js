@@ -208,8 +208,14 @@ if (hasOldPoalim) {
       -- same reference_number (non-null)
       (t1.reference_number IS NOT NULL AND t1.reference_number = t2.reference_number)
       OR
-      -- same description (covers cases where reference_number is null)
-      (t1.description IS NOT NULL AND t1.description = t2.description)
+      -- description fallback ONLY when neither side has a reference_number to
+      -- compare — falling back to description whenever refs merely differ
+      -- (rather than being absent) wrongly merges distinct real transactions
+      -- that share an amount + generic description within the 3-day window
+      -- (recurring payments, common bank-side wording) on banks like Discount
+      -- where reference_number is populated on nearly every row.
+      (t1.reference_number IS NULL AND t2.reference_number IS NULL
+        AND t1.description IS NOT NULL AND t1.description = t2.description)
     )
   `).all();
   if (dups.length) {
@@ -294,15 +300,17 @@ export function upsertAccount({ bankId, accountIndex, maskedNumber, corporateNam
   return row.id;
 }
 
+// Description fallback fires ONLY when the incoming txn and the stored candidate
+// both lack a reference_number — see matching comment on the startup dedup pass
+// above for why falling back whenever refs merely differ (not absent) is wrong.
 const stmtFindDupByRef = db.prepare(`
   SELECT id FROM transactions
   WHERE account_id = ?
     AND amount = ?
     AND ABS(julianday(date) - julianday(?)) <= 3
     AND (
-      (reference_number IS NOT NULL AND reference_number = ?)
-      OR
-      (description IS NOT NULL AND description = ?)
+      reference_number = ?
+      OR (reference_number IS NULL AND ? IS NULL AND description IS NOT NULL AND description = ?)
     )
   LIMIT 1
 `);
@@ -315,7 +323,7 @@ export function insertTransactions(accountId, txns, { status = 'completed' } = {
       const desc = t.description ?? null;
       const date = (t.date || '').slice(0, 10);
       const amount = Number(t.amount ?? 0);
-      if ((refNum || desc) && stmtFindDupByRef.get(accountId, amount, date, refNum, desc)) continue;
+      if ((refNum || desc) && stmtFindDupByRef.get(accountId, amount, date, refNum, refNum, desc)) continue;
       const res = stmtInsertTxn.run({
         account_id: accountId,
         bank_transaction_id: String(t.transactionID ?? t.id ?? ''),
