@@ -26,35 +26,6 @@ const ddmmyyyy = (d) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getM
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// Finds the smallest (fewest descendant elements) exact text match among
-// common clickable-ish tags and clicks it — mirrors the text-matching
-// pattern already used for the login/SMS buttons above, but prefers the
-// most specific match so we don't click a large container whose combined
-// text happens to include the target string.
-async function clickByExactText(frame, text) {
-  return frame.evaluate((searchText) => {
-    const candidates = Array.from(document.querySelectorAll('a, button, li, span, div, td'));
-    let best = null;
-    for (const el of candidates) {
-      if ((el.textContent || '').trim() !== searchText) continue;
-      if (!best || el.querySelectorAll('*').length < best.querySelectorAll('*').length) best = el;
-    }
-    if (!best) return false;
-    best.click();
-    return true;
-  }, text);
-}
-
-// Maps daysBack to the closest quick-range button visible in the p428New
-// transactions iframe ("7/30 ימים אחרונים", "3 חודשים אחרונים", "שנה אחורה").
-// No support yet for the custom "בין תאריכים" range beyond a year back.
-function pickPeriodButtonText(daysBack) {
-  if (daysBack <= 7) return '7 ימים אחרונים';
-  if (daysBack <= 30) return '30 ימים אחרונים';
-  if (daysBack <= 90) return '3 חודשים אחרונים';
-  return 'שנה אחורה';
-}
-
 // The p428New iframe loads its own transaction data in the background —
 // independent of, and unaffected by, the SiteMinder block that hits every
 // request WE try to fire (manual fetch, fetch-from-iframe-context, click-
@@ -364,18 +335,15 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
 
       // Fetch transactions for this account.
       //
-      // Primary path: the p428New iframe loads its own transaction data in
-      // the background, completely independent of the SiteMinder block that
-      // hits every request WE explicitly fire — three different attempts at
+      // The p428New iframe loads its own transaction data in the background,
+      // completely independent of the SiteMinder block that hits every
+      // request WE explicitly fire — three different attempts at
       // replicating/triggering that request (manual fetch, fetch-from-
       // iframe-context, a real click on the period button) all got bounced
       // with the identical errorcode=198, while the iframe's silent auto-load
       // works every time. So: wait for it to finish loading on its own, then
-      // parse the rendered table text directly — no request of ours involved.
-      //
-      // Fallback: the old click-then-manual-fetch chain, kept for accounts
-      // where the frame/load/parse doesn't pan out, so they degrade to the
-      // previous (broken) behavior rather than being silently skipped.
+      // parse the rendered table text directly — no request of ours involved,
+      // and no fallback that touches the iframe (see below for why).
       //
       // Everything below is wrapped in try/catch: the iframe gets replaced
       // by the SPA between accounts, and touching a stale Frame reference
@@ -406,116 +374,23 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         }
       }
 
+      // No fallback beyond this point anymore. Every request-based attempt
+      // (manual fetch from the top page, manual fetch from inside the
+      // iframe's own context, a real click on the period button) has always
+      // been bounced by SiteMinder — never once succeeded, across dozens of
+      // accounts. Worse: touching the iframe via the click path when it
+      // hadn't finished loading left it permanently detached — every
+      // account processed afterward in that same session failed too,
+      // cascading one slow account into a total loss for the rest of the
+      // sync. Accepting zero transactions for a single slow account is a
+      // much smaller loss than that.
       if (!transactions) {
-        let txnResp = null;
-        const periodText = pickPeriodButtonText(daysBack);
-        if (p428Frame) {
-          const responsePromise = page.waitForResponse(
-            r => r.url().includes('/Online/api/SkyOSH/get428Index'),
-            { timeout: 20_000 },
-          ).catch(() => null);
-          const clicked = await clickByExactText(p428Frame, periodText).catch(() => false);
-          if (clicked) {
-            const response = await responsePromise;
-            if (response) {
-              const text = await response.text().catch(() => '');
-              const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-              txnResp = {
-                status: response.status(),
-                redirected: response.request().redirectChain().length > 0,
-                finalUrl: response.url(),
-                contentType: response.headers()['content-type'] || null,
-                title: titleMatch ? titleMatch[1] : null,
-                text,
-              };
-            }
-          }
-        }
-
-        if (!txnResp) {
-          txnResp = await (p428Frame || page).evaluate(async (from, to) => {
-            const r = await fetch('/Online/api/SkyOSH/get428Index', {
-              method: 'POST', credentials: 'include',
-              headers: { 'content-type': 'application/json', accept: 'application/json, text/plain, */*' },
-              body: JSON.stringify({
-                inToDate: to,
-                inFromDate: from,
-                inSugTnua: '',
-                table: { sortExpression: 'MC02PeulaTaaEZ DESC', sortOrder: 'DESC', startRowIndex: 0, maxRow: 500, actionGuid: '' },
-                isFromSearch: false,
-              }),
-            });
-            const text = await r.text();
-            const titleMatch = text.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-            return {
-              status: r.status,
-              redirected: r.redirected,
-              finalUrl: r.url,
-              contentType: r.headers.get('content-type'),
-              title: titleMatch ? titleMatch[1] : null,
-              text,
-            };
-          }, fromStr, toStr);
-        }
-
-        if (txnResp.status >= 400) {
-          onProgress({ step: 'account-error', message: `שגיאה בחשבון ${maskedNumber}: HTTP ${txnResp.status}`, account: maskedNumber });
-          continue;
-        }
-
-        let txnBody = null;
-        try { txnBody = JSON.parse(txnResp.text || '{}'); } catch {}
-
-        // get428Index should always return JSON. A parse failure means something
-        // other than the real API response came back (redirect, challenge page,
-        // WAF block, etc.) — surface it as an explicit account-level error
-        // instead of silently reporting zero transactions as a fake success.
-        if (!txnBody) {
-          const body = txnResp.text || '';
-          const hasLoginForm = /userNumberDesktopHeb|passwordDesktopHeb/.test(body);
-          const hasAppShell = /ng-version|app-root/.test(body);
-          onProgress({
-            step: 'account-error',
-            message: `חשבון ${maskedNumber}: תגובה לא-תקינה מהבנק (לא JSON) — redirected=${txnResp.redirected} finalUrl=${txnResp.finalUrl} contentType=${txnResp.contentType} title="${txnResp.title || ''}" bodyLength=${body.length} hasLoginForm=${hasLoginForm} hasAppShell=${hasAppShell}. לא נמשכו תנועות. גוף התגובה (3000 תווים ראשונים): ${body.slice(0, 3000)}`,
-            account: maskedNumber,
-          });
-          continue;
-        }
-
-        const rows = txnBody?.body?.table?.rows ?? [];
-        const realRows = rows.filter(r => r.RecTypeSpecified && r.MC02PeulaTaaEZSpecified);
-
-        if (!realRows.length) {
-          onProgress({
-            step: 'debug-txn-shape',
-            message: `[DEBUG] ${maskedNumber}: bodyKeys=${Object.keys(txnBody).join(',')} rows=${rows.length} realRows=0` +
-              (rows[0] ? ` firstRowKeys=${Object.keys(rows[0]).join(',')} firstRow=${JSON.stringify(rows[0]).slice(0, 800)}` : ' (rows array itself is empty)'),
-            account: maskedNumber,
-          });
-        }
-
-        const ymdIso = (raw) => raw ? String(raw).slice(0, 10) : null;
-        transactions = realRows.map(r => {
-          const amountRaw = Number(String(r.MC02SchumEZ || 0).replace(/,/g, ''));
-          const isCredit = r.MC02OfiSchumEZ === 1 || r.MC02OfiSchumEZ === '1';
-          const signedAmount = isCredit ? Math.abs(amountRaw) : -Math.abs(amountRaw);
-          const balanceRaw = r.MC02YitraEZ != null ? Number(String(r.MC02YitraEZ).replace(/,/g, '')) : null;
-          const ref = r.MC02AsmEZ || r.MC02AsmahtaMekoritEZ || r.TransactionNumber;
-          return {
-            transactionID: `${maskedNumber}|${ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh) || ''}|${ref || ''}|${r.RowNumber || ''}`,
-            date: ymdIso(r.MC02PeulaTaaEZ) || ymdIso(r.TaarichEreh),
-            effectiveDate: ymdIso(r.TaarichEreh) || ymdIso(r.MC02PeulaTaaEZ),
-            description: r.MC02TnuaTeurEZ || r.Teur || '',
-            extendedDescription: r.P428G2Details || null,
-            amount: signedAmount,
-            runningBalance: balanceRaw,
-            beneficiaryName: r.NegdiShem || null,
-            beneficiaryBankCode: r.NegdiBank != null ? String(r.NegdiBank) : null,
-            beneficiaryBranch: r.NegdiSnif != null ? String(r.NegdiSnif) : null,
-            beneficiaryAccountNumber: r.NegdiCheshbon != null ? String(r.NegdiCheshbon) : null,
-            referenceNumber: ref != null ? String(ref) : null,
-          };
+        onProgress({
+          step: 'account-error',
+          message: `חשבון ${maskedNumber}: ה-iframe לא סיים לטעון בזמן — 0 תנועות לחשבון הזה (לא מנסים בקשה ידנית, זה שבר iframes בעבר)`,
+          account: maskedNumber,
         });
+        transactions = [];
       }
       } catch (e) {
         onProgress({
