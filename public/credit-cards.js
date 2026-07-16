@@ -100,6 +100,27 @@ async function toggleCard(item) {
   await loadPriorityPages(cardId);
 }
 
+const PAGE_STATUS_BADGE = {
+  complete: '<span style="color:var(--color-pos); font-weight:700;">✓ נקלט בפריוריטי</span>',
+  partial: (page) => `<span style="color:#c77700; font-weight:700;">⚠ נקלט חלקית — ${page.missingCount} שורות חסרות</span>`,
+  missing: '<span style="color:var(--color-text-light);">טרם נקלט</span>',
+  unknown: (page) => `<span style="color:var(--color-neg);">שגיאה בבדיקת סטטוס${page.statusError ? ': ' + escapeHtml(page.statusError) : ''}</span>`,
+};
+
+function pageStatusBadge(page) {
+  const entry = PAGE_STATUS_BADGE[page.priorityStatus];
+  if (typeof entry === 'function') return entry(page);
+  return entry || '<span style="color:var(--color-text-light);">יש להגדיר קופה כדי לבדוק סטטוס</span>';
+}
+
+/**
+ * Each card page stands alone (its own detail lines + closing "תשלום בפועל
+ * בבנק" line that nets it to zero) — once one is fully in Priority there's
+ * nothing left to look at there; the only page worth full attention is the
+ * next un-captured one. So pages render as a collapsed one-line list, with
+ * only the first non-'complete' page auto-expanded to its full detail.
+ * Any row can still be clicked to expand/collapse manually.
+ */
 async function loadPriorityPages(cardId) {
   const el = document.querySelector(`.card-item[data-card-id="${cardId}"] .priority-pages`);
   if (!el) return;
@@ -111,51 +132,64 @@ async function loadPriorityPages(cardId) {
 
     if (!pages.length) {
       el.innerHTML = `<p class="empty">אין תנועות.</p>`;
-    } else {
-      el.innerHTML = pages.map(page => {
-        const rows = page.lines.map(l => `
-          <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
-            <td>${escapeHtml(l.curdate)}</td>
-            <td>${escapeHtml(l.valueDate)}</td>
-            <td>${escapeHtml(l.btcode)}</td>
-            <td>${escapeHtml(l.details)}</td>
-            <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
-            <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
-          </tr>
-        `).join('');
-        const pushedBadge = ({
-          complete: '<span style="color:var(--color-pos); font-weight:700;">✓ נקלט בפריוריטי</span>',
-          partial: `<span style="color:#c77700; font-weight:700;">⚠ נקלט חלקית — ${page.missingCount} שורות חסרות</span>`,
-          missing: '<span style="color:var(--color-text-light);">טרם נקלט</span>',
-          unknown: `<span style="color:var(--color-neg);">שגיאה בבדיקת סטטוס${page.statusError ? ': ' + escapeHtml(page.statusError) : ''}</span>`,
-        })[page.priorityStatus] || '<span style="color:var(--color-text-light);">יש להגדיר קופה כדי לבדוק סטטוס</span>';
-        // Shown only when the status check found NO page under this card's
-        // CASHNAME on this date, but Priority does have page(s) under some
-        // other CASHNAME(s) that day — a strong hint the configured CASHNAME
-        // doesn't exactly match what's actually in Priority (e.g. a
-        // whitespace/typo difference invisible on screen).
-        const cashnameHint = page.priorityStatus === 'missing' && page.otherCashnamesOnDate?.length
-          ? `<div style="font-size:.85rem; color:#c77700; margin-top:4px;">
-              יש בפריוריטי דף/דפים בתאריך הזה תחת קופה אחרת: ${page.otherCashnamesOnDate.map(c => `"${escapeHtml(c)}"`).join(', ')}
-              — ודאי שהקופה שהוגדרה כאן ("${escapeHtml(card?.priority_cashname || '')}") תואמת בדיוק.
-            </div>`
-          : '';
-        return `
-          <div style="margin-bottom:16px;">
-            <div style="font-weight:700; margin-bottom:6px; display:flex; gap:10px; align-items:center;">
-              <span>דף בנק ליום ${escapeHtml(page.curdate)}</span>
-              ${pushedBadge}
-            </div>
+      return;
+    }
+
+    const activeIdx = pages.findIndex(p => p.priorityStatus !== 'complete');
+    const allDone = activeIdx === -1;
+
+    const banner = allDone
+      ? `<p style="color:var(--color-pos); font-weight:700; margin-bottom:12px;">✓ כל הדפים נקלטו במלואם בפריוריטי</p>`
+      : '';
+
+    const rowsHtml = pages.map((page, idx) => {
+      const isActive = idx === activeIdx;
+      const txnRows = page.lines.map(l => `
+        <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}>
+          <td>${escapeHtml(l.curdate)}</td>
+          <td>${escapeHtml(l.valueDate)}</td>
+          <td>${escapeHtml(l.btcode)}</td>
+          <td>${escapeHtml(l.details)}</td>
+          <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
+          <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
+        </tr>
+      `).join('');
+      // Shown only when the status check found NO page under this card's
+      // CASHNAME on this date, but Priority does have page(s) under some
+      // other CASHNAME(s) that day — a strong hint the configured CASHNAME
+      // doesn't exactly match what's actually in Priority.
+      const cashnameHint = page.priorityStatus === 'missing' && page.otherCashnamesOnDate?.length
+        ? `<div style="font-size:.85rem; color:#c77700; margin-top:4px;">
+            יש בפריוריטי דף/דפים בתאריך הזה תחת קופה אחרת: ${page.otherCashnamesOnDate.map(c => `"${escapeHtml(c)}"`).join(', ')}
+            — ודאי שהקופה שהוגדרה כאן ("${escapeHtml(card?.priority_cashname || '')}") תואמת בדיוק.
+          </div>`
+        : '';
+      return `
+        <div class="priority-page-row" data-page-idx="${idx}" style="margin-bottom:10px; ${isActive ? 'border-right:3px solid var(--color-accent, #4a7dff); padding-right:10px;' : ''}">
+          <div class="page-summary-row" style="cursor:pointer; font-weight:700; margin-bottom:4px; display:flex; gap:10px; align-items:center;">
+            <span>${isActive ? '▶' : '▸'}</span>
+            <span>דף בנק ליום ${escapeHtml(page.curdate)}</span>
+            ${pageStatusBadge(page)}
+          </div>
+          <div class="page-detail" style="display:${isActive ? 'block' : 'none'}; padding-inline-start:20px;">
             ${cashnameHint}
             <div class="txn-table-wrap">
               <table class="txn-table">
                 <thead><tr><th>תאריך</th><th>תאריך ערך</th><th>קוד פעולה</th><th>פרטים</th><th>חובה</th><th>זכות</th></tr></thead>
-                <tbody>${rows}</tbody>
+                <tbody>${txnRows}</tbody>
               </table>
             </div>
-          </div>`;
-      }).join('');
-    }
+          </div>
+        </div>`;
+    }).join('');
+
+    el.innerHTML = banner + rowsHtml;
+    el.querySelectorAll('.page-summary-row').forEach(row => {
+      row.addEventListener('click', () => {
+        const detail = row.nextElementSibling;
+        detail.style.display = detail.style.display === 'none' ? 'block' : 'none';
+      });
+    });
   } catch (e) {
     el.innerHTML = `<p class="empty" style="color:var(--color-neg);">שגיאה: ${escapeHtml(e.message)}</p>`;
   }
