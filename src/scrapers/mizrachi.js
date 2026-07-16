@@ -60,7 +60,7 @@ function pickPeriodButtonText(daysBack) {
 // request WE try to fire (manual fetch, fetch-from-iframe-context, click-
 // triggered — all bounced identically). Poll its visible text for the
 // "loading finished" marker instead of intercepting any network call.
-async function waitForFrameLoaded(frame, { timeoutMs = 15_000, intervalMs = 500 } = {}) {
+async function waitForFrameLoaded(frame, { timeoutMs = 30_000, intervalMs = 500 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const text = await frame.evaluate(() => document.body ? document.body.innerText : '').catch(() => '');
