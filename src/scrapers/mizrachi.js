@@ -288,9 +288,19 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         ? Number(switchBody.body.YitraAdkanit)
         : (acc.Remain != null ? Number(acc.Remain) : null);
 
-      // changeAccount may take a moment to propagate session state. Also give
-      // the bot-manager's behavioral check something to observe before the
-      // protected get428Index call (see humanizeInteraction above).
+      // Force a full page reload so this account's p428New iframe is a
+      // completely fresh load, not the same long-lived iframe reused across
+      // every account switch in the session. changeAccount already updated
+      // which account is "current" server-side, so the fresh bootstrap after
+      // reload should reflect it. Reusing one iframe across many accounts
+      // reliably degraded after the first couple (stuck loading, then the
+      // frame stopped appearing at all) — this is closer to what a real user
+      // does when actually re-navigating between accounts.
+      await page.reload({ waitUntil: 'networkidle2', timeout: 30_000 }).catch(() => {});
+
+      // changeAccount/reload may take a moment to propagate session state.
+      // Also give the bot-manager's behavioral check something to observe
+      // before the protected get428Index call (see humanizeInteraction above).
       await sleep(500);
       await humanizeInteraction(page);
 
