@@ -124,6 +124,12 @@ function bankPageNavPath(bp) {
 function buildCardLinePayload(line) {
   return {
     CURDATE: `${line.curdate}T00:00:00Z`,
+    // FNCDATE = "תאריך ערך" (value date) — the actual purchase date, not the
+    // bank debit date CURDATE is set to. Confirmed field name directly by
+    // the user checking Priority's own field list; without it every line
+    // read CURDATE for both date columns, hiding when a purchase actually
+    // happened behind the once-a-month billing date.
+    FNCDATE: `${line.valueDate}T00:00:00Z`,
     BTCODE: line.btcode,
     DETAILS: line.details.slice(0, 24),
     TRANSDESC: line.details.slice(0, 80),
