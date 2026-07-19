@@ -111,6 +111,7 @@ const stmtInsertCardTxn = db.prepare(`
     @status, @raw_json
   )
   ON CONFLICT(card_id, bank_transaction_id) DO UPDATE SET
+    purchase_date = excluded.purchase_date,
     billing_date = COALESCE(excluded.billing_date, billing_date),
     merchant_name = excluded.merchant_name,
     amount = excluded.amount,

@@ -204,23 +204,36 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
           onProgress({ step: 'card-warning', message: `כרטיס ${ident.cardSuffix}: ${rawDetails.length} תנועות בעמוד אחד — ייתכן שיש עוד (pagination טרם ממומש)`, account: maskedNumber });
         }
 
-        const transactions = rawDetails.map(t => ({
-          // transactionIndexNumber is the bank's own stable per-transaction id.
-          transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
-          purchaseDate: ymdToIso(t.eventDate),
-          billingDate: cycleBillingDate || ymdToIso(t.debitDate) || null,
-          merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
-          // Bank convention: positive = charge, negative = refund/credit.
-          // Flipped to match this app's convention (negative = expense),
-          // same as the Discount scraper.
-          amount: -Number(t.currencyAmount?.amount ?? 0),
-          currency: t.__intl ? (t.eventCurrencyDescription || 'ILS') : 'ILS',
-          originalAmount: null,
-          installmentCurrent: t.paymentNumber || null,
-          installmentTotal: t.paymentsNumber || null,
-          status: 'posted',
-          raw: t,
-        }));
+        const transactions = rawDetails.map(t => {
+          // The bank sometimes returns "19000101" as a null-date placeholder
+          // for eventDate on charges with no real purchase-event date (e.g.
+          // "דמי כרטיס /הנפקה" card-issuance fees) — confirmed live: pushing
+          // that through as FNCDATE got Priority's own HTTP 400 rejecting the
+          // column outright. Falling back to this cycle's billing date, which
+          // is always a real date, whenever the purchase date's year looks
+          // like the placeholder rather than an actual purchase.
+          const rawPurchaseDate = ymdToIso(t.eventDate);
+          const purchaseDate = (rawPurchaseDate && Number(rawPurchaseDate.slice(0, 4)) >= 2000)
+            ? rawPurchaseDate
+            : (cycleBillingDate || ymdToIso(t.debitDate) || null);
+          return {
+            // transactionIndexNumber is the bank's own stable per-transaction id.
+            transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
+            purchaseDate,
+            billingDate: cycleBillingDate || ymdToIso(t.debitDate) || null,
+            merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
+            // Bank convention: positive = charge, negative = refund/credit.
+            // Flipped to match this app's convention (negative = expense),
+            // same as the Discount scraper.
+            amount: -Number(t.currencyAmount?.amount ?? 0),
+            currency: t.__intl ? (t.eventCurrencyDescription || 'ILS') : 'ILS',
+            originalAmount: null,
+            installmentCurrent: t.paymentNumber || null,
+            installmentTotal: t.paymentsNumber || null,
+            status: 'posted',
+            raw: t,
+          };
+        });
 
         results.push({
           account: { maskedNumber, corporateName },
