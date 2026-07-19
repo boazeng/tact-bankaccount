@@ -712,6 +712,46 @@ async function pushAllToPriority() {
     }
   }
 
+  // Step 4: credit-card pages for cards that have a Priority cashname
+  // configured. push-all-to-priority already diffs each page against what
+  // Priority actually has (see pushCardPageToPriority) and only pushes
+  // missing lines, or skips entirely if a page already covers that month —
+  // so "only if needed" is already the endpoint's own behavior, not
+  // something this loop has to decide.
+  addLine('── בודק כרטיסי אשראי (רק מה שחסר) ──');
+  try {
+    const cr = await fetch('/api/credit-cards/push-all-to-priority', { method: 'POST' });
+    const cardData = await cr.json();
+    if (!cr.ok) throw new Error(cardData.error || cr.status);
+    if (!cardData.byCard.length) {
+      addLine('אין כרטיסי אשראי עם קופה מוגדרת', 'success');
+    } else {
+      for (const c of cardData.byCard) {
+        if (c.error) {
+          addLine(`✗ כרטיס ${c.cardLast4}: ${c.error}`, 'error');
+          totalErrors++;
+          continue;
+        }
+        const results = c.results || [];
+        const failedPages = results.filter(r => !r.ok);
+        const newPages = results.filter(r => r.ok && !r.alreadyExisted);
+        const alreadyPages = results.filter(r => r.alreadyExisted);
+        if (!results.length) {
+          addLine(`✓ כרטיס ${c.cardLast4}: אין דפים חדשים`, 'success');
+        } else if (failedPages.length) {
+          addLine(`⚠ כרטיס ${c.cardLast4}: ${newPages.length} דפים נקלטו, ${failedPages.length} נכשלו`, 'warn');
+          totalFailed += failedPages.length;
+        } else {
+          const existedNote = alreadyPages.length ? `, ${alreadyPages.length} כבר היו מכוסים` : '';
+          addLine(`✓ כרטיס ${c.cardLast4}: ${newPages.length} דפים נקלטו${existedNote}`, 'success');
+        }
+      }
+    }
+  } catch (e) {
+    addLine(`✗ שגיאה בקליטת כרטיסי אשראי: ${e.message}`, 'error');
+    totalErrors++;
+  }
+
   if (!totalErrors && !totalFailed) panel.classList.add('done');
   document.getElementById('sum-new').textContent = totalPushed;
   document.getElementById('sum-dup').textContent = totalMatched;
