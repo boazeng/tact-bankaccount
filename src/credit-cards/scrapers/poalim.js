@@ -127,7 +127,13 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
           credentials: 'include',
           headers: { accept: 'application/json, text/plain, */*' },
         });
-        return { status: r.status, body: r.ok ? await r.json() : null };
+        // A 200/204 with an empty body (observed live for some accounts)
+        // makes r.json() throw "Unexpected end of JSON input" — read as text
+        // first and treat empty/unparseable as no data instead of failing.
+        const text = await r.text();
+        let body = null;
+        if (text) { try { body = JSON.parse(text); } catch {} }
+        return { status: r.status, body };
       }, accountId);
 
       const cards = totalsResp.body?.cards ?? [];
@@ -153,7 +159,12 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
             credentials: 'include',
             headers: { accept: 'application/json, text/plain, */*' },
           });
-          return { status: r.status, body: r.ok ? await r.json() : null };
+          // Same defensive parse as the totals call above — an empty body
+          // must not throw and abort the whole sync over one card.
+          const text = await r.text();
+          let body = null;
+          if (text) { try { body = JSON.parse(text); } catch {} }
+          return { status: r.status, body };
         }, {
           accountId,
           cardSuffix: ident.cardSuffix,
