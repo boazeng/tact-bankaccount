@@ -115,12 +115,14 @@ function pageStatusBadge(page) {
 
 /**
  * Each card page stands alone (its own detail lines + closing "תשלום בפועל
- * בבנק" line that nets it to zero) — once one is fully in Priority there's
- * nothing left to look at there. So a 'complete' page collapses to a
- * one-line summary; EVERY page that still needs attention (missing OR
- * partial OR unknown) stays expanded — a false/real gap on an earlier page
- * must never hide a later page (e.g. next month's statement) that's simply
- * waiting its own turn. Any row can still be clicked to expand/collapse.
+ * בבנק" line that nets it to zero) — a page is a closed, one-time snapshot
+ * of a bank statement, not something to keep re-litigating. Only the
+ * newest page (the current billing cycle to work on) auto-expands; every
+ * older page collapses to a one-line summary regardless of its status —
+ * an old page that's still partial (e.g. from before a capture bug was
+ * fixed) is not this screen's problem to keep surfacing on every visit, it
+ * gets topped up quietly by "קלוט לפריוריטי" like any other page. Any row
+ * can still be clicked to expand/collapse manually for a spot check.
  */
 async function loadPriorityPages(cardId) {
   const el = document.querySelector(`.card-item[data-card-id="${cardId}"] .priority-pages`);
@@ -136,14 +138,15 @@ async function loadPriorityPages(cardId) {
       return;
     }
 
-    const allDone = pages.every(p => p.priorityStatus === 'complete');
+    const latestIdx = pages.length - 1;
+    const latestPage = pages[latestIdx];
 
-    const banner = allDone
-      ? `<p style="color:var(--color-pos); font-weight:700; margin-bottom:12px;">✓ כל הדפים נקלטו במלואם בפריוריטי</p>`
+    const banner = latestPage.priorityStatus === 'complete'
+      ? `<p style="color:var(--color-pos); font-weight:700; margin-bottom:12px;">✓ הדף האחרון (${escapeHtml(latestPage.curdate)}) נקלט במלואו בפריוריטי</p>`
       : '';
 
     const rowsHtml = pages.map((page, idx) => {
-      const isActive = page.priorityStatus !== 'complete';
+      const isActive = idx === latestIdx;
       // `matched` is set per-line by the live check whenever a page header
       // was found in Priority (undefined when the whole page reads
       // 'missing' — nothing to compare a line against). Marking every row
