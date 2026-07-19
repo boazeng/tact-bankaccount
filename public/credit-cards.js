@@ -242,7 +242,15 @@ async function pushCardToPriority(cardId) {
       status.textContent = 'אין דפים חדשים לקליטה';
       status.style.color = 'var(--color-text-light)';
     } else if (failed.length) {
-      status.textContent = `שגיאה בקליטה: ${failed[0].error}`;
+      // A partial push failure (some lines of a page rejected) carries no
+      // top-level `.error` — the real message is nested one level down, in
+      // failed[0].failed[0].error (per-line detail from pushCardPageToPriority).
+      // Only the future-dated-page guard and an unexpected throw set a
+      // top-level `.error` directly.
+      const firstIssue = failed[0];
+      const lineError = firstIssue.failed?.[0]?.error;
+      const moreLines = firstIssue.failed?.length > 1 ? ` (ועוד ${firstIssue.failed.length - 1} שורות נכשלו)` : '';
+      status.textContent = `שגיאה בקליטה (${firstIssue.curdate}): ${firstIssue.error || lineError || 'שגיאה לא ידועה'}${moreLines}`;
       status.style.color = 'var(--color-neg)';
     } else {
       const existed = data.results.filter(r => r.alreadyExisted).length;
