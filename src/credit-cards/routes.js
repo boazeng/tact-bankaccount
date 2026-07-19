@@ -29,6 +29,14 @@ const PENDING_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const router = express.Router();
 
+// Lets the main dashboard (public/app.js) know which banks have a
+// credit-card scraper implemented, so it can auto-trigger a card sync right
+// after that bank's checking-account sync — without hardcoding bank ids in
+// two places that could drift apart as more card scrapers get added.
+router.get('/api/credit-cards/supported-banks', (req, res) => {
+  res.json({ bankIds: Object.keys(cardScraperRegistry) });
+});
+
 router.get('/api/credit-cards', (req, res) => {
   res.json({ cards: listCards() });
 });

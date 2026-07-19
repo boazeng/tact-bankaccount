@@ -336,6 +336,86 @@ function promptSmsCode(message) {
   });
 }
 
+// Cached once per page load — which bank ids have a credit-card scraper
+// implemented (currently discount, poalim). Lets startSync/syncAllBanks
+// auto-trigger a card sync right after that bank's account sync, so the
+// user never has to visit credit-cards.html separately for a routine sync.
+let _cardSupportedBanksPromise = null;
+function getCardSupportedBanks() {
+  if (!_cardSupportedBanksPromise) {
+    _cardSupportedBanksPromise = fetch('/api/credit-cards/supported-banks')
+      .then(r => r.json())
+      .then(d => d.bankIds || [])
+      .catch(() => []);
+  }
+  return _cardSupportedBanksPromise;
+}
+
+/**
+ * Runs one bank's credit-card sync (same SSE endpoint credit-cards.js uses)
+ * into the SAME log panel as the checking-account sync that just finished,
+ * so "sync this bank" reads as one continuous operation instead of two
+ * separate ones the user has to remember to run.
+ */
+async function syncCardsForBank(bankId, bankName, addLine) {
+  addLine(`── כרטיסי אשראי: ${bankName} ──`);
+  try {
+    const res = await fetch(`/api/credit-cards/${bankId}/sync`, { method: 'POST' });
+    if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const eventLine = block.split('\n').find(l => l.startsWith('event:'));
+        const dataLine = block.split('\n').find(l => l.startsWith('data:'));
+        if (!eventLine || !dataLine) continue;
+        const event = eventLine.slice(6).trim();
+        const data = JSON.parse(dataLine.slice(5).trim());
+
+        if (event === 'progress') {
+          addLine(data.message || data.step);
+        } else if (event === 'sms-required') {
+          addLine('🔐 הבנק שלח SMS (כרטיסי אשראי) — ממתין לקוד…');
+          try {
+            const code = await promptSmsCode(data.message);
+            const r = await fetch(`/api/credit-cards/sync/${data.syncId}/sms-code`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ code }),
+            });
+            if (!r.ok) {
+              const e = await r.json().catch(() => ({}));
+              addLine('שגיאה בשליחת קוד: ' + (e.error || r.status), 'error');
+            } else {
+              addLine('קוד SMS נשלח, ממתין לאישור הבנק…', 'success');
+            }
+          } catch {
+            addLine('הקוד בוטל — סנכרון כרטיסים ייכשל', 'error');
+          }
+        } else if (event === 'card-saved') {
+          const staleNote = data.staleRemoved > 0 ? ` (${data.staleRemoved} תנועות ישנות הוסרו)` : '';
+          addLine(`✓ ${data.account} · כרטיס ${data.cardLast4}: ${data.newSaved} תנועות חדשות${staleNote}`, 'success');
+        } else if (event === 'done') {
+          addLine(`כרטיסי אשראי ${bankName}: ${data.totalCards} כרטיסים, ${data.totalNewTxns} תנועות חדשות`, 'success');
+        } else if (event === 'error') {
+          addLine(`שגיאה בכרטיסי אשראי (${bankName}): ${data.message}`, 'error');
+        }
+      }
+    }
+  } catch (e) {
+    addLine(`שגיאה בכרטיסי אשראי (${bankName}): ${e.message}`, 'error');
+  }
+}
+
 async function startSync(bankId, bankName, days = 30) {
   const panel = document.getElementById('sync-panel');
   const log = document.getElementById('sync-log');
@@ -362,6 +442,7 @@ async function startSync(bankId, bankName, days = 30) {
   let buf = '';
   let currentSyncId = null;
   const accountsSaved = [];
+  let bankSyncOk = false;
 
   try {
     const res = await fetch(`/api/banks/${bankId}/sync?days=${days}`, { method: 'POST' });
@@ -420,7 +501,7 @@ async function startSync(bankId, bankName, days = 30) {
           document.getElementById('sum-accounts').textContent = data.accountsCount;
           summary.style.display = 'grid';
           addLine(`סיום: ${data.totalFetched} תנועות, ${data.totalNewSaved} חדשות נשמרו`, 'success');
-          setTimeout(() => renderIndex(), 800);
+          bankSyncOk = true;
         } else if (event === 'error') {
           panel.classList.add('error');
           addLine('שגיאה: ' + data.message, 'error');
@@ -430,6 +511,14 @@ async function startSync(bankId, bankName, days = 30) {
   } catch (e) {
     panel.classList.add('error');
     addLine('שגיאה: ' + e.message, 'error');
+  }
+
+  if (bankSyncOk) {
+    const cardBanks = await getCardSupportedBanks();
+    if (cardBanks.includes(bankId)) {
+      await syncCardsForBank(bankId, bankName, addLine);
+    }
+    setTimeout(() => renderIndex(), 800);
   }
 }
 
@@ -459,10 +548,12 @@ async function syncAllBanks() {
   };
 
   let totalNew = 0, totalDup = 0, totalAccounts = 0;
+  const cardBanks = await getCardSupportedBanks();
 
   for (const bank of banks) {
     const days = Number(localStorage.getItem(`sync-days:${bank.id}`)) || 30;
     addLine(`── ${bank.name_he} (${days} ימים) ──`);
+    let bankOk = false;
 
     try {
       const syncRes = await fetch(`/api/banks/${bank.id}/sync?days=${days}`, { method: 'POST' });
@@ -516,6 +607,7 @@ async function syncAllBanks() {
             totalNew += data.totalNewSaved || 0;
             totalDup += data.totalDedupSkipped || 0;
             totalAccounts += data.accountsCount || 0;
+            bankOk = true;
           } else if (event === 'error') {
             addLine(`שגיאה: ${data.message}`, 'error');
             panel.classList.add('error');
@@ -525,6 +617,10 @@ async function syncAllBanks() {
     } catch (e) {
       addLine(`שגיאה ב-${bank.name_he}: ${e.message}`, 'error');
       panel.classList.add('error');
+    }
+
+    if (bankOk && cardBanks.includes(bank.id)) {
+      await syncCardsForBank(bank.id, bank.name_he, addLine);
     }
   }
 
