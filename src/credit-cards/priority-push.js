@@ -91,6 +91,48 @@ export async function findExistingCardPage(cashName, curdate) {
 }
 
 /**
+ * All BANKPAGES rows for a given calendar month, across every CASHNAME —
+ * same reasoning as fetchBankPagesForDate (no server-side CASHNAME filter,
+ * see normalizeText). $top is much higher here since a month spans ~30 days
+ * of every cashname's daily bank pages, not just one day.
+ */
+async function fetchBankPagesForMonth(yearMonth) {
+  const [y, m] = yearMonth.split('-').map(Number);
+  const lastDay = new Date(y, m, 0).getDate();
+  const params = new URLSearchParams({
+    '$filter': `CURDATE ge ${yearMonth}-01T00:00:00Z and CURDATE le ${yearMonth}-${String(lastDay).padStart(2, '0')}T23:59:59Z`,
+    '$select': 'CASHNAME,BPYEAR,CASH,BPNUM,CURDATE',
+    '$top': '2000',
+  });
+  const r = await fetch(`${PRIORITY_URL}/BANKPAGES?${params}`, { headers: getHeaders });
+  if (!r.ok) {
+    const text = await r.text().catch(() => '');
+    throw new Error(`BANKPAGES month lookup failed: HTTP ${r.status}: ${text.slice(0, 200)}`);
+  }
+  const data = await r.json();
+  return data.value || [];
+}
+
+/**
+ * A credit-card page is a once-a-month thing, sometimes already entered
+ * manually under a slightly different exact day than our computed cycle
+ * date (confirmed live: a manual page under CURDATE=2026-06-20 for a card
+ * whose cycle we computed as 2026-06-21 — findExistingCardPage's exact-day
+ * match missed it entirely and pushed a duplicate page). This checks the
+ * whole calendar month for this CASHNAME instead of one exact day, so a
+ * page entered under any day that month is recognized as "already there."
+ * Returns { BPYEAR, CASH, BPNUM, CURDATE } if one exists, or null.
+ */
+export async function findExistingCardPageInMonth(cashName, curdate) {
+  const rows = await fetchBankPagesForMonth(curdate.slice(0, 7));
+  const target = normalizeText(cashName);
+  const match = rows.find(row => normalizeText(row.CASHNAME) === target);
+  if (!match) return null;
+  const { BPYEAR, CASH, BPNUM, CURDATE } = match;
+  return { BPYEAR, CASH, BPNUM, CURDATE };
+}
+
+/**
  * Creates a new BANKPAGES record for this card's billing-cycle page.
  * Returns { BPYEAR, CASH, BPNUM }. Callers must check findExistingCardPage()
  * first — this always creates a new page, it never looks for an existing one.
@@ -206,13 +248,22 @@ export function diffMissingLines(lines, existingLines) {
  * row individually — the only way to tell a genuine gap from a
  * text-matching false positive at a glance instead of trusting an aggregate
  * count.
- * Returns { status: 'missing'|'partial'|'complete', missingCount, lineMatches?, otherCashnamesOnDate? }.
+ * Returns { status: 'missing'|'partial'|'complete'|'exists-other-date', missingCount, lineMatches?, otherCashnamesOnDate?, existingPageDate? }.
  */
 export async function checkCardPageStatus(cashName, page) {
   const rows = await fetchBankPagesForDate(page.curdate);
   const target = normalizeText(cashName);
   const existing = rows.find(row => normalizeText(row.CASHNAME) === target);
   if (!existing) {
+    // No page on our computed exact day — but a card page is monthly, and
+    // this cashname may already have one under a different day that month
+    // (e.g. entered manually). Line-by-line diffing against a
+    // different-day page isn't meaningful, so just report it as covered
+    // instead of "missing" (which would otherwise invite a duplicate push).
+    const monthMatch = await findExistingCardPageInMonth(cashName, page.curdate);
+    if (monthMatch) {
+      return { status: 'exists-other-date', missingCount: 0, existingPageDate: monthMatch.CURDATE?.slice(0, 10) || null };
+    }
     const otherCashnamesOnDate = [...new Set(rows.map(r => r.CASHNAME).filter(Boolean))];
     return { status: 'missing', missingCount: page.lines.length, otherCashnamesOnDate };
   }
@@ -240,6 +291,23 @@ export async function checkCardPageStatus(cashName, page) {
  */
 export async function pushCardPageToPriority(cashName, page) {
   const existing = await findExistingCardPage(cashName, page.curdate);
+
+  // No exact-day match — check the whole month before creating a page.
+  // Confirmed live: a manual page under CURDATE=2026-06-20 for a cycle we
+  // computed as 2026-06-21 was invisible to the exact-day check and got a
+  // duplicate page pushed on top of it. One page per cashname per month,
+  // period — never create a second one just because the day differs.
+  if (!existing) {
+    const monthMatch = await findExistingCardPageInMonth(cashName, page.curdate);
+    if (monthMatch) {
+      return {
+        bpyear: monthMatch.BPYEAR, cash: monthMatch.CASH, bpnum: monthMatch.BPNUM,
+        pushed: [], failed: [], alreadyExisted: true, hadExistingPage: true,
+        skippedReason: `כבר קיים דף לקופה זו בחודש זה (${monthMatch.CURDATE?.slice(0, 10) || '?'}) — לא נוצר דף כפול`,
+      };
+    }
+  }
+
   let bankPage = existing;
   let linesToPush = page.lines;
 
