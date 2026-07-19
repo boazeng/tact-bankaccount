@@ -285,6 +285,73 @@ async function pushAllCardsToPriority() {
   }
 }
 
+/* ───────── sync (SSE) ───────── */
+const _origTitle = document.title;
+
+// Self-contained copy of app.js's promptSmsCode (see file header note on
+// isolation) — reuses the same shared #sms-modal CSS classes from style.css.
+function promptSmsCode(message) {
+  return new Promise((resolve, reject) => {
+    let modal = document.getElementById('sms-modal');
+    if (!modal) {
+      modal = document.createElement('div');
+      modal.id = 'sms-modal';
+      modal.className = 'modal-bg sms-modal-bg';
+      modal.innerHTML = `
+        <div class="modal">
+          <div class="sms-icon">🔐</div>
+          <h3>נדרש קוד SMS</h3>
+          <p class="msg" id="sms-modal-msg"></p>
+          <input id="sms-modal-input" class="sms-input" type="text" inputmode="numeric"
+                 autocomplete="one-time-code" maxlength="10" placeholder="••••••">
+          <div class="err" id="sms-modal-err"></div>
+          <div class="modal-actions">
+            <button class="btn btn-ghost" id="sms-modal-cancel">ביטול</button>
+            <button class="btn btn-pri" id="sms-modal-submit">אישור</button>
+          </div>
+        </div>
+      `;
+      document.body.appendChild(modal);
+    }
+    const input = modal.querySelector('#sms-modal-input');
+    const errEl = modal.querySelector('#sms-modal-err');
+    modal.querySelector('#sms-modal-msg').textContent = message || 'הזן את הקוד שקיבלת ב-SMS מהבנק';
+    input.value = ''; errEl.textContent = '';
+    modal.classList.add('open');
+    document.title = '🔐 קוד SMS נדרש — ' + _origTitle;
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try { new Notification('🔐 קוד SMS נדרש', { body: 'הזן את הקוד שקיבלת בנייד באתר TACT', tag: 'sms' }); } catch {}
+    }
+
+    setTimeout(() => input.focus(), 50);
+
+    const close = () => {
+      modal.classList.remove('open'); cleanup();
+      document.title = _origTitle;
+    };
+    const submit = () => {
+      const code = input.value.trim();
+      if (!code) { errEl.textContent = 'הזן קוד'; return; }
+      close(); resolve(code);
+    };
+    const cancel = () => { close(); reject(new Error('cancelled')); };
+    const onKey = (e) => { if (e.key === 'Enter') submit(); if (e.key === 'Escape') cancel(); };
+    const cleanup = () => {
+      modal.querySelector('#sms-modal-submit').removeEventListener('click', submit);
+      modal.querySelector('#sms-modal-cancel').removeEventListener('click', cancel);
+      input.removeEventListener('keydown', onKey);
+    };
+    modal.querySelector('#sms-modal-submit').addEventListener('click', submit);
+    modal.querySelector('#sms-modal-cancel').addEventListener('click', cancel);
+    input.addEventListener('keydown', onKey);
+
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission().catch(() => {});
+    }
+  });
+}
+
 async function syncCards(bankId) {
   const panel = document.getElementById('sync-panel');
   const log = document.getElementById('sync-log');
@@ -329,6 +396,20 @@ async function syncCards(bankId) {
 
         if (event === 'progress') {
           addLine(data.message || data.step);
+        } else if (event === 'sms-required') {
+          addLine('🔐 הבנק שלח SMS — ממתין לקוד…');
+          try {
+            const code = await promptSmsCode(data.message);
+            const r = await fetch(`/api/credit-cards/sync/${data.syncId}/sms-code`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ code }),
+            });
+            if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error || `HTTP ${r.status}`); }
+            addLine('קוד SMS נשלח, ממתין לאישור הבנק…', 'success');
+          } catch (e) {
+            addLine('בוטל/נכשל שליחת קוד SMS: ' + e.message, 'error');
+          }
         } else if (event === 'card-saved') {
           const staleNote = data.staleRemoved > 0 ? ` (${data.staleRemoved} תנועות ישנות הוסרו)` : '';
           addLine(`✓ ${data.account} · כרטיס ${data.cardLast4}: נשמרו ${data.newSaved} תנועות חדשות (מתוך ${data.fetched})${staleNote}`, 'success');
@@ -349,6 +430,7 @@ async function syncCards(bankId) {
 }
 
 document.getElementById('sync-discount-btn').addEventListener('click', () => syncCards('discount'));
+document.getElementById('sync-poalim-btn').addEventListener('click', () => syncCards('poalim'));
 document.getElementById('push-all-priority-btn').addEventListener('click', pushAllCardsToPriority);
 
 renderUserChip();

@@ -33,7 +33,7 @@ page.on('response', async (res) => {
       url,
       status: res.status(),
       reqBody: req.postData() ? req.postData().slice(0, 400) : null,
-      bodyPreview: body.slice(0, 2000),
+      bodyPreview: /\/cards\//.test(url) ? body : body.slice(0, 2000),
       bodyLength: body.length,
     });
   } catch {}

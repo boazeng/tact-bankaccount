@@ -4,6 +4,7 @@ import { requireRole } from '../auth/index.js';
 import { resolveAllCredentialsForBank } from '../secrets/bank-creds.js';
 import { bankRegistry } from '../scrapers/index.js';
 import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/discount.js';
+import { scrapePoalimCards, bankInfo as poalimCardsInfo } from './scrapers/poalim.js';
 import {
   upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
   listCards, getCard, getCardTransactions, getPriorityPreviewForCard,
@@ -16,7 +17,15 @@ import { pushCardPageToPriority, checkCardPageStatus, priorityConfigured } from 
 // resolution (resolveAllCredentialsForBank needs it) — no scraping code is shared.
 const cardScraperRegistry = {
   [discountCardsInfo.id]: { info: discountCardsInfo, scrape: scrapeDiscountCards },
+  [poalimCardsInfo.id]: { info: poalimCardsInfo, scrape: scrapePoalimCards },
 };
+
+// In-memory map of in-flight card-scraper sessions waiting on user input (SMS
+// code, etc.) — mirrors src/server.js's pendingInputs bridge but kept as its
+// own instance on purpose (see plan: src/credit-cards/ shares no code with
+// the rest of the app), keyed by the same per-sync syncId.
+const pendingInputs = new Map();
+const PENDING_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
 
 const router = express.Router();
 
@@ -162,8 +171,32 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
     return res.end();
   }
 
+  const syncId = crypto.randomUUID();
+
+  // Same SMS bridge pattern as src/server.js's bank sync: the scraper calls
+  // onSmsRequired, we emit an SSE event carrying syncId, the UI posts the code
+  // back to POST /api/credit-cards/sync/:syncId/sms-code, which resolves this promise.
+  const onSmsRequired = ({ message } = {}) => {
+    send('sms-required', { syncId, message: message || 'נדרש קוד SMS' });
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        if (pendingInputs.get(syncId)?.resolve === resolve) pendingInputs.delete(syncId);
+        reject(new Error('SMS code timeout (5 min)'));
+      }, PENDING_INPUT_TIMEOUT_MS);
+      pendingInputs.set(syncId, {
+        resolve: (val) => { clearTimeout(timer); resolve(val); },
+        reject: (err) => { clearTimeout(timer); reject(err); },
+      });
+    });
+  };
+
+  req.on('close', () => {
+    const p = pendingInputs.get(syncId);
+    if (p) { pendingInputs.delete(syncId); p.reject(new Error('Client disconnected')); }
+  });
+
   try {
-    send('sync-started', { syncId: crypto.randomUUID(), bankId });
+    send('sync-started', { syncId, bankId });
     send('progress', { step: 'start', message: `מתחיל סנכרון כרטיסי אשראי — ${bank.info.nameHe}` });
 
     let totalNewTxns = 0;
@@ -179,6 +212,7 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
       const result = await bank.scrape({
         credentials,
         onProgress: (p) => send('progress', p),
+        onSmsRequired,
       });
 
       for (const entry of result.cards) {
@@ -220,6 +254,20 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
   } finally {
     res.end();
   }
+});
+
+// User-input bridge for in-flight card syncs (SMS codes) — same shape as
+// src/server.js's /api/sync/:syncId/sms-code, kept as its own route on
+// purpose (see the isolated pendingInputs map above).
+router.post('/api/credit-cards/sync/:syncId/sms-code', requireRole('approver'), (req, res) => {
+  const { syncId } = req.params;
+  const code = (req.body?.code || '').trim();
+  if (!code) return res.status(400).json({ error: 'קוד חסר' });
+  const pending = pendingInputs.get(syncId);
+  if (!pending) return res.status(404).json({ error: 'אין סנכרון פעיל שמחכה לקוד (אולי פג תוקף)' });
+  pendingInputs.delete(syncId);
+  pending.resolve(code);
+  res.json({ ok: true });
 });
 
 export default router;
