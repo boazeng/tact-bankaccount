@@ -53,6 +53,7 @@ async function loadCards() {
             <b>${escapeHtml(BANK_NAMES[c.bank_id] || c.bank_id)}</b>
             · כרטיס •••• ${escapeHtml(c.card_last4)}
             ${c.label ? `· ${escapeHtml(c.label)}` : ''}
+            ${c.corporate_name ? `· ${escapeHtml(c.corporate_name)}` : ''}
           </div>
           <div style="color:var(--color-text-light); font-size:.9rem;">
             ${c.account_masked_number ? escapeHtml(c.account_masked_number) + ' · ' : ''}

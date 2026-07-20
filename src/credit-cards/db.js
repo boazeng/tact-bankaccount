@@ -60,6 +60,9 @@ const cardCols = db.prepare(`PRAGMA table_info(credit_cards)`).all().map(c => c.
 if (!cardCols.includes('priority_cashname')) {
   db.exec(`ALTER TABLE credit_cards ADD COLUMN priority_cashname TEXT`);
 }
+if (!cardCols.includes('corporate_name')) {
+  db.exec(`ALTER TABLE credit_cards ADD COLUMN corporate_name TEXT`);
+}
 
 // One-time cleanup: an earlier version of the scraper pulled the still-open
 // current cycle, which could include a billing_date that hadn't happened
@@ -151,20 +154,22 @@ if (!cardCols.includes('priority_cashname')) {
 }
 
 const stmtUpsertCard = db.prepare(`
-  INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label)
-  VALUES (@bank_id, @account_masked_number, @card_last4, @label)
+  INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label, corporate_name)
+  VALUES (@bank_id, @account_masked_number, @card_last4, @label, @corporate_name)
   ON CONFLICT(bank_id, card_last4) DO UPDATE SET
     account_masked_number = excluded.account_masked_number,
-    label = COALESCE(excluded.label, label)
+    label = COALESCE(excluded.label, label),
+    corporate_name = COALESCE(excluded.corporate_name, corporate_name)
   RETURNING id
 `);
 
-export function upsertCard({ bankId, accountMaskedNumber, cardLast4, label }) {
+export function upsertCard({ bankId, accountMaskedNumber, cardLast4, label, corporateName }) {
   const row = stmtUpsertCard.get({
     bank_id: bankId,
     account_masked_number: accountMaskedNumber ?? null,
     card_last4: cardLast4,
     label: label ?? null,
+    corporate_name: corporateName ?? null,
   });
   return row.id;
 }
@@ -243,7 +248,7 @@ export function deleteStaleCardTransactions(cardId, billingDate, keepBankTransac
 
 export function listCards() {
   return db.prepare(`
-    SELECT c.id, c.bank_id, c.account_masked_number, c.card_last4, c.label,
+    SELECT c.id, c.bank_id, c.account_masked_number, c.card_last4, c.label, c.corporate_name,
            c.is_active, c.last_sync_at, c.priority_cashname,
            (SELECT COUNT(*) FROM card_transactions t WHERE t.card_id = c.id) AS txn_count,
            (SELECT MAX(purchase_date) FROM card_transactions t WHERE t.card_id = c.id) AS last_txn_date

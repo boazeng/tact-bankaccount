@@ -244,6 +244,7 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
           accountMaskedNumber: entry.account.maskedNumber,
           cardLast4: entry.card.cardLast4,
           label: entry.card.label,
+          corporateName: entry.account.corporateName,
         });
         const newCount = insertCardTransactions(cardId, entry.transactions);
 
