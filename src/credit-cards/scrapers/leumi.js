@@ -13,7 +13,7 @@ import puppeteer from 'puppeteer';
 // once the legacy cards page has loaded (confirmed by capturing a live
 // session and finding the exact same value nowhere else but that cookie).
 const BROKER_URL = '/ChannelWCF/Broker.svc/ProcessRequest';
-const CARDS_WORLD_PAGE = 'https://hb2.bankleumi.co.il/staticcontent/digitalfront/he/legacy/cards/cards-world';
+const CARDS_WORLD_PAGE = 'https://hb2.bankleumi.co.il/staticcontent/digitalfront/he/legacy/cards/cards-world/';
 
 const ymdIsrael = (isoUtc) => new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
