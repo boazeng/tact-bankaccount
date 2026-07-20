@@ -75,6 +75,55 @@ if (!cardCols.includes('priority_cashname')) {
   }
 }
 
+// One-time scoped repair (2026-07-20): rows for cashname "103-200-4547"
+// synced BEFORE the billing_date fix (see the billing-date-split fix) are
+// stuck with a wrong billing_date forever — the scraper never re-fetches an
+// old closed cycle, so a fresh sync can't correct them on its own.
+// Recomputes billing_date straight from each row's already-stored raw bank
+// data (no re-scraping). Idempotent — once a row's billing_date matches
+// what its raw data says, it's left alone, so this is a no-op on every
+// startup after the first. Deliberately scoped to this one cashname only —
+// see repair-card-billing-dates.js for the same fix on any other cashname
+// later (explicit user decision: never a blanket historical rewrite).
+{
+  const REPAIR_CASHNAME = '103-200-4547';
+  const ymdToIsoRaw = (s) => (s && String(s).length === 8) ? `${String(s).slice(0, 4)}-${String(s).slice(4, 6)}-${String(s).slice(6, 8)}` : null;
+  const ymdIsraelRaw = (isoUtc) => {
+    try {
+      return new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Jerusalem', year: 'numeric', month: '2-digit', day: '2-digit',
+      }).format(new Date(isoUtc));
+    } catch { return null; }
+  };
+  const REAL_DEBIT_DATE = {
+    discount: (raw) => ymdToIsoRaw(raw.DebitDate),
+    poalim: (raw) => ymdToIsoRaw(raw.debitDate),
+    leumi: (raw) => (raw.DebitCardDebitPeriodUTC ? ymdIsraelRaw(raw.DebitCardDebitPeriodUTC) : null),
+  };
+  const today = new Date().toISOString().slice(0, 10);
+  const rowsToCheck = db.prepare(`
+    SELECT ct.id, ct.billing_date, ct.raw_json, cc.bank_id
+    FROM card_transactions ct
+    JOIN credit_cards cc ON cc.id = ct.card_id
+    WHERE cc.priority_cashname = ?
+  `).all(REPAIR_CASHNAME);
+  const updateBillingDate = db.prepare(`UPDATE card_transactions SET billing_date = ? WHERE id = ?`);
+  let repairedCount = 0;
+  for (const row of rowsToCheck) {
+    const getReal = REAL_DEBIT_DATE[row.bank_id];
+    if (!getReal) continue;
+    let raw;
+    try { raw = JSON.parse(row.raw_json); } catch { continue; }
+    const realDate = getReal(raw);
+    if (!realDate || realDate > today || realDate === row.billing_date) continue;
+    updateBillingDate.run(realDate, row.id);
+    repairedCount++;
+  }
+  if (repairedCount > 0) {
+    console.log(`[credit-cards] repaired ${repairedCount} pre-fix billing_date row(s) for cashname ${REPAIR_CASHNAME}`);
+  }
+}
+
 const stmtUpsertCard = db.prepare(`
   INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label)
   VALUES (@bank_id, @account_masked_number, @card_last4, @label)
