@@ -337,7 +337,7 @@ function promptSmsCode(message) {
 }
 
 // Cached once per page load — which bank ids have a credit-card scraper
-// implemented (currently discount, poalim). Lets startSync/syncAllBanks
+// implemented (currently discount, poalim, leumi). Lets startSync/syncAllBanks
 // auto-trigger a card sync right after that bank's account sync, so the
 // user never has to visit credit-cards.html separately for a routine sync.
 let _cardSupportedBanksPromise = null;
