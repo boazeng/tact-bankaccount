@@ -236,14 +236,23 @@ export function getCard(cardId) {
 }
 
 export function getCardTransactions(cardId, { limit = 200, offset = 0 } = {}) {
-  return db.prepare(`
+  const rows = db.prepare(`
     SELECT id, purchase_date, billing_date, merchant_name, amount, currency,
-           original_amount, installment_current, installment_total, status
+           original_amount, installment_current, installment_total, status, raw_json
     FROM card_transactions
     WHERE card_id = ?
     ORDER BY purchase_date DESC, id DESC
     LIMIT ? OFFSET ?
   `).all(cardId, limit, offset);
+  // raw exposes the bank's own original entry (DebitDate/PurchaseDate/
+  // OrderNumerator/installment fields as the bank itself named them) —
+  // diagnostic only, for spotting cases like a stored billing_date that
+  // doesn't match what the bank's own raw data actually says.
+  return rows.map(({ raw_json, ...r }) => {
+    let raw = null;
+    try { raw = JSON.parse(raw_json); } catch {}
+    return { ...r, raw };
+  });
 }
 
 /**
