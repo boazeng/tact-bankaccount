@@ -177,8 +177,24 @@ async function loadPriorityPages(cardId) {
       // actually lets a real gap be told apart from a text-match false
       // positive at a glance — you see it right next to the line itself.
       const hasLineStatus = page.lines.some(l => l.matched !== undefined);
-      const txnRows = page.lines.map(l => `
-        <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}${l.matched === false ? ' style="background:rgba(199,119,0,.1);"' : ''}>
+      const colCount = 6 + (hasLineStatus ? 1 : 0);
+      const txnRows = page.lines.map(l => {
+        // rawAnomaly is only set server-side when a purchase is dated AFTER
+        // its own billing_date — physically impossible, and the reason
+        // behind the 2026-07-02 mismatch on cashname 103-200-4547. Shown
+        // inline (not a separate tool) so it's visible right where the line
+        // itself already is.
+        const anomalyRow = l.rawAnomaly ? `
+          <tr style="background:rgba(200,40,40,.08);">
+            <td colspan="${colCount}" style="font-size:.85rem; color:var(--color-neg);">
+              ⚠ תאריך רכישה מאוחר מתאריך החיוב — נתוני הבנק הגולמיים: DebitDate=${escapeHtml(l.rawAnomaly.DebitDate ?? '—')},
+              PurchaseDate=${escapeHtml(l.rawAnomaly.PurchaseDate ?? '—')},
+              OrderNumerator=${escapeHtml(l.rawAnomaly.OrderNumerator ?? '—')},
+              Installment=${escapeHtml(l.rawAnomaly.InstallmentNumber ?? '—')}/${escapeHtml(l.rawAnomaly.TotalNumberOfInstallments ?? '—')}
+            </td>
+          </tr>` : '';
+        return `
+        <tr${l.details === 'תשלום בפועל בבנק' ? ' style="font-weight:700; border-top:2px solid var(--color-border);"' : ''}${l.matched === false ? ' style="background:rgba(199,119,0,.1);"' : ''}${l.rawAnomaly ? ' style="background:rgba(200,40,40,.15);"' : ''}>
           <td>${escapeHtml(l.curdate)}</td>
           <td>${escapeHtml(l.valueDate)}</td>
           <td>${escapeHtml(l.btcode)}</td>
@@ -186,8 +202,8 @@ async function loadPriorityPages(cardId) {
           <td>${l.debit ? fmtMoney(-l.debit) : ''}</td>
           <td>${l.credit ? fmtMoney(l.credit) : ''}</td>
           ${hasLineStatus ? `<td>${l.matched === false ? '<span style="color:#c77700;">✗ חסר</span>' : l.matched === true ? '<span style="color:var(--color-pos);">✓</span>' : ''}</td>` : ''}
-        </tr>
-      `).join('');
+        </tr>${anomalyRow}`;
+      }).join('');
       // Shown only when the status check found NO page under this card's
       // CASHNAME on this date, but Priority does have page(s) under some
       // other CASHNAME(s) that day — a strong hint the configured CASHNAME

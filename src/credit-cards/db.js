@@ -281,7 +281,7 @@ export function getPriorityPreviewForCard(cardId) {
   `).get(cardId);
 
   const txns = db.prepare(`
-    SELECT bank_transaction_id, purchase_date, billing_date, merchant_name, amount
+    SELECT bank_transaction_id, purchase_date, billing_date, merchant_name, amount, raw_json
     FROM card_transactions
     WHERE card_id = ?
     ORDER BY purchase_date, id
@@ -317,14 +317,35 @@ export function getPriorityPreviewForCard(cardId) {
     // bank already netted into this cycle — each keeps its own sign so the
     // closing line balances to the REAL bank charge, not a naive sum of
     // purchases that double-counts refunds as extra debits.
-    const lines = group.map(t => ({
-      curdate,
-      valueDate: t.purchase_date,
-      btcode: '00',
-      details: (t.merchant_name || '').slice(0, 24),
-      debit: Number(t.amount) < 0 ? Math.abs(Number(t.amount)) : 0,
-      credit: Number(t.amount) > 0 ? Number(t.amount) : 0,
-    }));
+    const lines = group.map(t => {
+      // A purchase dated AFTER its own billing_date is physically
+      // impossible (a debit can't happen before the purchase that caused
+      // it) — surfaces the bank's own raw fields for that row directly in
+      // this view, so an anomaly like this can be diagnosed without needing
+      // separate DB/API access.
+      let rawAnomaly = null;
+      if (t.purchase_date > curdate) {
+        try {
+          const raw = JSON.parse(t.raw_json);
+          rawAnomaly = {
+            DebitDate: raw.DebitDate ?? raw.debitDate ?? null,
+            PurchaseDate: raw.PurchaseDate ?? raw.eventDate ?? raw.DateDealUTC ?? null,
+            OrderNumerator: raw.OrderNumerator ?? null,
+            InstallmentNumber: raw.InstallmentNumber ?? raw.installmentNumber ?? null,
+            TotalNumberOfInstallments: raw.TotalNumberOfInstallments ?? raw.totalNumberOfInstallments ?? null,
+          };
+        } catch {}
+      }
+      return {
+        curdate,
+        valueDate: t.purchase_date,
+        btcode: '00',
+        details: (t.merchant_name || '').slice(0, 24),
+        debit: Number(t.amount) < 0 ? Math.abs(Number(t.amount)) : 0,
+        credit: Number(t.amount) > 0 ? Number(t.amount) : 0,
+        rawAnomaly,
+      };
+    });
     const netTotal = Math.round(group.reduce((sum, t) => sum - Number(t.amount), 0) * 100) / 100;
     lines.push({
       curdate,
