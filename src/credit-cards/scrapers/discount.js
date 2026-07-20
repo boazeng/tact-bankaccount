@@ -138,10 +138,14 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
           CardTypeCode: card.CardTypeCode,
           CardValidityDate: card.CardValidityDate,
         };
-        // DateOfPastDebit (from the summary call above) is the actual bank debit
-        // day for this card's closed cycle — far more reliable than each
-        // transaction's own DebitDate, which is often blank (e.g. standing
-        // orders not yet processed at capture time).
+        // DateOfPastDebit (from the summary call above) is the cycle's
+        // headline debit day — used as a fallback only, for the rare entry
+        // whose own DebitDate is blank (e.g. a standing order not yet
+        // processed at capture time). It must NOT override a present
+        // DebitDate: some purchases (foreign-currency charges, in
+        // particular) hit the bank on their own earlier date within the same
+        // cycle rather than on the cycle's main debit day, and each needs
+        // its own bank row to reconcile against the real per-date debit.
         const cycleBillingDate = ymdToIso(card.DateOfPastDebit) || null;
 
         // Cards bill on different days of the month (confirmed live: one
@@ -186,7 +190,7 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
             // observed in practice, not hypothetical (see plan verification notes).
             transactionID: [e.PurchaseDate, e.PurchaseTime, card.CardNumber, e.MerchantName, e.PurchaseAmount, e.OrderNumerator].filter(v => v != null).join('|'),
             purchaseDate: ymdToIso(e.PurchaseDate),
-            billingDate: cycleBillingDate || ymdToIso(e.DebitDate) || null,
+            billingDate: ymdToIso(e.DebitDate) || cycleBillingDate || null,
             merchantName: (e.MerchantName || '').trim() || null,
             // Preserve the bank's sign — forcing abs() here previously turned
             // refunds/credits into extra debits, inflating the page total

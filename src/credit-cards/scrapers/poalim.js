@@ -148,9 +148,12 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
         if (!ident || !cycleTotal) continue;
 
         const statementDate = cycleTotal.statementDate;
-        // debitDate is the actual day the bank debits the account for this
-        // cycle — far more reliable than any per-transaction date, same
-        // reasoning as DateOfPastDebit in the Discount scraper.
+        // debitDate is the cycle's headline debit day — used as a fallback
+        // only, same reasoning as DateOfPastDebit in the Discount scraper:
+        // a transaction's own debitDate (below) must win when present, since
+        // some charges (e.g. foreign-currency purchases) hit the bank on
+        // their own earlier date within the same cycle, and each needs its
+        // own bank row to reconcile against the real per-date debit.
         const cycleBillingDate = ymdToIso(cycleTotal.debitDate);
 
         const txnResp = await page.evaluate(async (params) => {
@@ -220,7 +223,7 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
             // transactionIndexNumber is the bank's own stable per-transaction id.
             transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
             purchaseDate,
-            billingDate: cycleBillingDate || ymdToIso(t.debitDate) || null,
+            billingDate: ymdToIso(t.debitDate) || cycleBillingDate || null,
             merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
             // Bank convention: positive = charge, negative = refund/credit.
             // Flipped to match this app's convention (negative = expense),

@@ -237,10 +237,15 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
         // Remove rows for this same cycle that the bank no longer reports —
         // e.g. an entry the scraper previously mis-included and has since
         // learned to exclude (see the "not yet finalized" fix). Only cleans
-        // up the exact billing_date just synced; other cycles are untouched.
-        const billingDate = entry.transactions[0]?.billingDate;
-        const staleRemoved = deleteStaleCardTransactions(
-          cardId, billingDate, entry.transactions.map(t => t.transactionID),
+        // up billing_dates actually present in this synced batch; other
+        // cycles are untouched. A batch can span more than one billing_date
+        // (e.g. a foreign-currency charge debited on its own earlier date
+        // within the same cycle), so every distinct date gets its own pass.
+        const billingDates = [...new Set(entry.transactions.map(t => t.billingDate).filter(Boolean))];
+        const keepIds = entry.transactions.map(t => t.transactionID);
+        const staleRemoved = billingDates.reduce(
+          (sum, date) => sum + deleteStaleCardTransactions(cardId, date, keepIds),
+          0,
         );
 
         updateCardLastSync(cardId);
