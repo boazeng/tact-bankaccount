@@ -1,4 +1,4 @@
-import { getAccountByMaskedNumber, getTransactionsForDate } from '../db.js';
+import { getAccountByMaskedNumber, getTransactionsForEffectiveDate } from '../db.js';
 
 // The fixed text each bank actually puts in the CHECKING ACCOUNT's own
 // transaction description for a credit-card debit — confirmed live by the
@@ -36,7 +36,7 @@ export function findRealBankDebit({ bankId, accountMaskedNumber, cardLast4, date
   if (!account) return { status: 'not-found', amount: null };
 
   const matcher = CARD_DEBIT_DESCRIPTION[bankId];
-  const debits = getTransactionsForDate(account.id, date).filter(t => Number(t.amount) < 0);
+  const debits = getTransactionsForEffectiveDate(account.id, date).filter(t => Number(t.amount) < 0);
   const candidates = matcher
     ? debits.filter(t => matcher(t.description || '', cardLast4))
     : debits;

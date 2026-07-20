@@ -537,6 +537,21 @@ export function getTransactionDatesInRange(accountId, fromDate, toDate) {
   `).all(accountId, fromDate, toDate).map(r => r.date);
 }
 
+// Credit-card billing_date must be matched against the checking account's
+// own effective_date ("תאריך ערך") — the date the debit actually value-dated
+// against the balance — not `date` (the operation/posting date), which can
+// legitimately differ from it.
+export function getTransactionsForEffectiveDate(accountId, effectiveDate) {
+  return db.prepare(`
+    SELECT id, date, effective_date, description, extended_description, beneficiary_name,
+           beneficiary_bank_code, beneficiary_branch, beneficiary_account,
+           amount, reference_number
+    FROM transactions
+    WHERE account_id = ? AND effective_date = ?
+    ORDER BY id
+  `).all(accountId, effectiveDate);
+}
+
 export function getTransactionsForDate(accountId, date) {
   return db.prepare(`
     SELECT id, date, description, extended_description, beneficiary_name,
