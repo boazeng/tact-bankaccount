@@ -114,6 +114,19 @@ async function pushCardToPriority(card) {
       results.push({ curdate: page.curdate, ok: false, error: `דף עתידי (${page.curdate}) — לא נקלט` });
       continue;
     }
+    // Never push a page whose closing line doesn't match the REAL debit in
+    // the checking account (see reconcile.js) — a confirmed mismatch means
+    // our own card_transactions data is wrong somewhere (missing/duplicate/
+    // wrong billing_date), and pushing anyway would just carry that error
+    // straight into Priority. Explicit user decision after a real incident
+    // where a duplicate got silently summed into this exact line.
+    if (page.reconcile?.matched === false) {
+      results.push({
+        curdate: page.curdate, ok: false,
+        error: `הסכום שלנו (${page.reconcile.computedSum}) לא תואם לסכום שירד בפועל בבנק (${page.reconcile.anchorAmount}) — לא נקלט`,
+      });
+      continue;
+    }
     try {
       const result = await pushCardPageToPriority(card.priority_cashname, page);
       const ok = result.failed.length === 0;

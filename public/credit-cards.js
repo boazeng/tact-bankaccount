@@ -115,6 +115,28 @@ function pageStatusBadge(page) {
 }
 
 /**
+ * Independent check of this page's closing line against the REAL debit in
+ * the checking account (see src/credit-cards/reconcile.js) — separate from
+ * priorityStatus, which only compares our own lines against what Priority
+ * already has. A page can look "complete" in Priority and still be wrong if
+ * the amount itself never matched what actually left the bank (the exact
+ * failure mode from a real duplicate-transaction incident), so this must be
+ * shown even when priorityStatus looks fine.
+ */
+function reconcileBadge(page) {
+  const r = page.reconcile;
+  if (!r) return '';
+  if (r.matched === true) {
+    return `<span style="color:var(--color-pos);">✓ תואם לעו"ש (${fmtMoney(r.computedSum)})</span>`;
+  }
+  if (r.matched === false) {
+    return `<span style="color:var(--color-neg); font-weight:700;">✗ אי-התאמה מול העו"ש — שלנו: ${fmtMoney(r.computedSum)}, בבנק: ${fmtMoney(r.anchorAmount)} — לא ייקלט</span>`;
+  }
+  const reason = r.status === 'ambiguous' ? 'כמה תנועות מתאימות בעו"ש באותו יום' : 'לא נמצאה תנועה מתאימה בעו"ש';
+  return `<span style="color:var(--color-text-light);">⚠ לא אומת מול העו"ש (${escapeHtml(reason)})</span>`;
+}
+
+/**
  * Each card page stands alone (its own detail lines + closing "תשלום בפועל
  * בבנק" line that nets it to zero) — a page is a closed, one-time snapshot
  * of a bank statement, not something to keep re-litigating. Only the
@@ -182,6 +204,7 @@ async function loadPriorityPages(cardId) {
             <span>${isActive ? '▶' : '▸'}</span>
             <span>דף בנק ליום ${escapeHtml(page.curdate)}</span>
             ${pageStatusBadge(page)}
+            ${reconcileBadge(page)}
           </div>
           <div class="page-detail" style="display:${isActive ? 'block' : 'none'}; padding-inline-start:20px;">
             ${cashnameHint}

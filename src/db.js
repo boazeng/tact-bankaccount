@@ -406,6 +406,10 @@ export function getInactiveMaskedNumbers(bankId) {
   return new Set(stmtInactiveByBank.all(bankId).map(r => r.masked_number));
 }
 
+export function getAccountByMaskedNumber(bankId, maskedNumber) {
+  return db.prepare(`SELECT * FROM accounts WHERE bank_id = ? AND masked_number = ?`).get(bankId, maskedNumber);
+}
+
 export function getAccount(accountId) {
   return db.prepare(`
     SELECT a.*, b.name_he AS bank_name_he,

@@ -1,5 +1,6 @@
 import Database from 'better-sqlite3';
 import path from 'node:path';
+import { findRealBankDebit } from './reconcile.js';
 
 // Isolated connection to the same tact.db used by the main app (src/db.js
 // creates the file/dir first — this module never runs standalone before it).
@@ -206,8 +207,21 @@ export function getCardTransactions(cardId, { limit = 200, offset = 0 } = {}) {
  * Some rows come back from the bank without billing_date populated yet; those
  * are folded into the cycle's most common non-null billing_date rather than
  * being dropped or shown as their own stray group.
+ *
+ * Each page also carries `reconcile`: an independent check of the closing
+ * line's amount against the REAL debit in the checking account's own
+ * transactions (see reconcile.js) — not just our own summed card_transactions
+ * rows. A real incident showed why this matters: a duplicate transaction bug
+ * on the card side got silently summed straight into "amount debited",
+ * producing a wrong total that looked internally consistent. `matched` is
+ * `true`/`false` only when a unique real debit was found that day; `null`
+ * means unverified (none found, or more than one candidate that day).
  */
 export function getPriorityPreviewForCard(cardId) {
+  const card = db.prepare(`
+    SELECT bank_id, account_masked_number, card_last4 FROM credit_cards WHERE id = ?
+  `).get(cardId);
+
   const txns = db.prepare(`
     SELECT bank_transaction_id, purchase_date, billing_date, merchant_name, amount
     FROM card_transactions
@@ -253,16 +267,31 @@ export function getPriorityPreviewForCard(cardId) {
       debit: Number(t.amount) < 0 ? Math.abs(Number(t.amount)) : 0,
       credit: Number(t.amount) > 0 ? Number(t.amount) : 0,
     }));
-    const netTotal = group.reduce((sum, t) => sum - Number(t.amount), 0);
+    const netTotal = Math.round(group.reduce((sum, t) => sum - Number(t.amount), 0) * 100) / 100;
     lines.push({
       curdate,
       valueDate: curdate,
       btcode: '00',
       details: 'תשלום בפועל בבנק',
       debit: 0,
-      credit: Math.round(netTotal * 100) / 100,
+      credit: netTotal,
     });
-    pages.push({ curdate, lines });
+
+    const debit = card
+      ? findRealBankDebit({
+          bankId: card.bank_id,
+          accountMaskedNumber: card.account_masked_number,
+          cardLast4: card.card_last4,
+          date: curdate,
+        })
+      : { status: 'not-found', amount: null };
+    const matched = debit.status === 'matched' ? Math.abs(debit.amount - netTotal) < 0.01 : null;
+
+    pages.push({
+      curdate,
+      lines,
+      reconcile: { status: debit.status, anchorAmount: debit.amount, computedSum: netTotal, matched },
+    });
   }
   return pages.sort((a, b) => a.curdate < b.curdate ? -1 : 1);
 }
