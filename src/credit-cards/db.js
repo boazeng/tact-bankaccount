@@ -124,6 +124,31 @@ if (!cardCols.includes('priority_cashname')) {
   }
 }
 
+// One-time scoped removal (2026-07-20): 3 specific transactions on cashname
+// "103-200-4547" — purchased 2026-07-07 but stuck with billing_date
+// 2026-07-02 (a purchase can't be debited before it happened; the repair
+// above didn't change them, meaning the bank's own raw DebitDate genuinely
+// reads 2026-07-02 for these rows, not just stale pre-fix data) — were
+// blocking that page's push (real bank debit ₪6,602.24 vs our summed
+// ₪7,027.24). Explicit user decision: remove exactly these 3 rows from our
+// system; she'll enter them in Priority herself under the correct date.
+// Matched by exact date+amount (not merchant text, which the UI truncates)
+// so this can never touch any other row. Idempotent — matches nothing once
+// already deleted.
+{
+  const REMOVE_CASHNAME = '103-200-4547';
+  const res = db.prepare(`
+    DELETE FROM card_transactions
+    WHERE card_id IN (SELECT id FROM credit_cards WHERE priority_cashname = ?)
+      AND purchase_date = '2026-07-07'
+      AND billing_date = '2026-07-02'
+      AND amount IN (-80, -55, -290)
+  `).run(REMOVE_CASHNAME);
+  if (res.changes > 0) {
+    console.log(`[credit-cards] removed ${res.changes} stuck transaction(s) for cashname ${REMOVE_CASHNAME} (2026-07-02 mismatch)`);
+  }
+}
+
 const stmtUpsertCard = db.prepare(`
   INSERT INTO credit_cards (bank_id, account_masked_number, card_last4, label)
   VALUES (@bank_id, @account_masked_number, @card_last4, @label)
