@@ -124,6 +124,21 @@ header {
 .user-chip a:hover { color: var(--color-accent); background: var(--color-accent-soft); }
 .user-chip .sep { color: var(--color-border); }
 
+/* ───────── view tabs ───────── */
+.view-tabs {
+  display: flex; gap: 8px; margin-top: 32px;
+  border-bottom: 1px solid var(--color-border);
+}
+.tab-btn {
+  font-family: var(--font-family); font-weight: 600; font-size: 0.95rem;
+  color: var(--color-text-light); background: transparent; border: none;
+  padding: 12px 6px; margin-bottom: -1px; cursor: pointer;
+  border-bottom: 2px solid transparent; transition: color 0.15s ease, border-color 0.15s ease;
+}
+.tab-btn + .tab-btn { margin-inline-start: 18px; }
+.tab-btn:hover { color: var(--color-primary); }
+.tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+
 /* ───────── page head ───────── */
 .page-head { padding: 48px 0 32px; }
 .eyebrow {

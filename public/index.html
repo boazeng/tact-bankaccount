@@ -21,21 +21,45 @@
 </header>
 
 <main class="wrap">
-  <div class="page-head">
-    <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
-    <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
-    <p class="sub">סנכרון תנועות מהבנקים אל בסיס הנתונים המקומי. כל סנכרון מוסיף רק תנועות חדשות — אין כפילויות.</p>
-    <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
-      <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן כל החשבונות</button>
-      <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט כל החשבונות לפריוריטי</button>
-      <a href="/credit-cards.html" class="btn btn-ghost">💳 כרטיסי אשראי</a>
+  <div class="view-tabs">
+    <button type="button" class="tab-btn active" id="tab-btn-bank">תנועות בנק</button>
+    <button type="button" class="tab-btn" id="tab-btn-cards">כרטיסי אשראי</button>
+  </div>
+
+  <div id="view-bank">
+    <div class="page-head">
+      <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
+      <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
+      <p class="sub">סנכרון תנועות מהבנקים אל בסיס הנתונים המקומי. כל סנכרון מוסיף רק תנועות חדשות — אין כפילויות.</p>
+      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
+        <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן כל החשבונות</button>
+        <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט כל החשבונות לפריוריטי</button>
+      </div>
+    </div>
+
+    <div id="bank-summary" class="bank-summary"></div>
+
+    <div id="banks-container">
+      <p class="empty" style="padding: 32px;">טוען…</p>
     </div>
   </div>
 
-  <div id="bank-summary" class="bank-summary"></div>
+  <div id="view-cards" style="display:none">
+    <div class="page-head">
+      <div class="eyebrow"><b></b>CREDIT CARDS</div>
+      <h1>כרטיסי <span class="acc">אשראי</span></h1>
+      <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים, נקלט לפריוריטי כדף בנק חודשי לכל כרטיס.</p>
+      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
+        <button class="btn btn-pri" id="sync-discount-btn">↓ סנכרן כרטיסי דיסקונט</button>
+        <button class="btn btn-pri" id="sync-poalim-btn">↓ סנכרן כרטיסי פועלים</button>
+        <button class="btn btn-pri" id="sync-leumi-btn">↓ סנכרן כרטיסי לאומי</button>
+        <button class="btn btn-push" id="push-all-priority-btn">↑ קלוט את כל הכרטיסים לפריוריטי</button>
+      </div>
+    </div>
 
-  <div id="banks-container">
-    <p class="empty" style="padding: 32px;">טוען…</p>
+    <div id="cards-container">
+      <p class="empty" style="padding: 32px;">טוען…</p>
+    </div>
   </div>
 </main>
 
@@ -58,5 +82,25 @@
 </footer>
 
 <script src="/app.js"></script>
+<script type="module" src="/credit-cards.js"></script>
+<script>
+(function () {
+  const tabBtnBank = document.getElementById('tab-btn-bank');
+  const tabBtnCards = document.getElementById('tab-btn-cards');
+  const viewBank = document.getElementById('view-bank');
+  const viewCards = document.getElementById('view-cards');
+
+  function showTab(tab) {
+    const isBank = tab === 'bank';
+    viewBank.style.display = isBank ? '' : 'none';
+    viewCards.style.display = isBank ? 'none' : '';
+    tabBtnBank.classList.toggle('active', isBank);
+    tabBtnCards.classList.toggle('active', !isBank);
+  }
+
+  tabBtnBank.addEventListener('click', () => showTab('bank'));
+  tabBtnCards.addEventListener('click', () => showTab('cards'));
+})();
+</script>
 </body>
 </html>
