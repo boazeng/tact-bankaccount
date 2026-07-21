@@ -144,15 +144,31 @@ header {
 .kpi-hint { color: var(--color-text-light); font-size: 0.72rem; margin-top: 6px; }
 
 .kpi-breakdown {
-  background: var(--color-primary-soft); border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg); padding: 16px 20px; margin: -12px 0 32px;
+  background: var(--color-bg-white); border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg); padding: 20px 24px; margin: -12px 0 32px;
+  box-shadow: var(--shadow-md);
 }
-.kpi-breakdown-title { font-weight: 700; color: var(--color-primary); font-size: 0.9rem; margin-bottom: 10px; }
-.kpi-breakdown-row {
-  display: flex; justify-content: space-between; padding: 6px 0;
-  border-bottom: 1px solid var(--color-border-soft); font-size: 0.9rem;
+.kpi-breakdown-title { font-weight: 700; color: var(--color-primary); font-size: 0.9rem; margin-bottom: 16px; }
+.kpi-bar-empty { color: var(--color-text-light); font-size: 0.9rem; padding: 8px 0; }
+
+.kpi-bar-row + .kpi-bar-row { margin-top: 14px; }
+.kpi-bar-head {
+  display: flex; justify-content: space-between; align-items: baseline;
+  font-size: 0.88rem; margin-bottom: 5px;
 }
-.kpi-breakdown-row:last-child { border-bottom: 0; }
+.kpi-bar-name { color: var(--color-text); font-weight: 600; }
+.kpi-bar-value { color: var(--color-text-light); font-variant-numeric: tabular-nums; }
+.kpi-bar-track {
+  position: relative; height: 10px; border-radius: 4px 0 0 4px;
+  background: var(--color-primary-soft);
+  overflow: hidden;
+}
+.kpi-bar-fill {
+  position: absolute; top: 0; right: 0; height: 100%; min-width: 4px;
+  background: var(--color-primary); border-radius: 4px 0 0 4px;
+  transition: width 0.4s ease, background 0.15s ease;
+}
+.kpi-bar-row:hover .kpi-bar-fill { background: var(--color-primary-light); }
 
 .dashboard-tiles {
   display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));

@@ -146,39 +146,50 @@
   });
 
   const BREAKDOWN_TITLES = {
-    balance: 'הרכב יתרה כוללת לפי בנק',
-    cards: 'הרכב כרטיסי אשראי לפי בנק',
-    txns: 'הרכב תנועות לפי בנק',
+    balance: 'הרכב יתרה כוללת לפי חברה',
+    cards: 'הרכב כרטיסי אשראי לפי חברה',
+    txns: 'הרכב תנועות לפי חברה',
   };
-  let breakdownData = null;
+  const BREAKDOWN_FMT = {
+    balance: (v) => fmtMoney(v),
+    cards: (v) => v + ' כרטיסים',
+    txns: (v) => v + ' תנועות',
+  };
+  let breakdownRows = { balance: [], cards: [], txns: [] };
   let openBreakdown = null;
 
   function renderBreakdown(kind) {
     const panel = document.getElementById('kpi-breakdown');
     const title = document.getElementById('kpi-breakdown-title');
     const list = document.getElementById('kpi-breakdown-list');
-    const cards = document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]');
+    const kpiCards = document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]');
 
     if (openBreakdown === kind) {
       panel.style.display = 'none';
-      cards.forEach((c) => c.classList.remove('active'));
+      kpiCards.forEach((c) => c.classList.remove('active'));
       openBreakdown = null;
       return;
     }
 
     openBreakdown = kind;
-    cards.forEach((c) => c.classList.toggle('active', c.dataset.kpi === kind));
+    kpiCards.forEach((c) => c.classList.toggle('active', c.dataset.kpi === kind));
 
-    const rows = (breakdownData || []).filter((r) => r[kind] > 0);
+    const rows = breakdownRows[kind] || [];
+    const max = Math.max(1, ...rows.map((r) => Math.abs(r.value)));
     title.textContent = BREAKDOWN_TITLES[kind];
     list.innerHTML = rows.length
       ? rows.map((r) => `
-          <div class="kpi-breakdown-row">
-            <span>${escapeHtml(r.name)}</span>
-            <span>${kind === 'balance' ? fmtMoney(r.balance) : kind === 'cards' ? r.cards + ' כרטיסים' : r.txns + ' תנועות'}</span>
+          <div class="kpi-bar-row">
+            <div class="kpi-bar-head">
+              <span class="kpi-bar-name">${escapeHtml(r.name)}</span>
+              <span class="kpi-bar-value">${BREAKDOWN_FMT[kind](r.value)}</span>
+            </div>
+            <div class="kpi-bar-track">
+              <div class="kpi-bar-fill" style="width:${Math.max(4, Math.abs(r.value) / max * 100)}%"></div>
+            </div>
           </div>
         `).join('')
-      : '<div class="kpi-breakdown-row"><span>אין נתונים</span></div>';
+      : '<p class="kpi-bar-empty">אין נתונים</p>';
     panel.style.display = 'block';
   }
 
@@ -195,15 +206,13 @@
       const { banks } = await banksRes.json();
       const { cards } = await cardsRes.json();
 
-      const perBank = new Map();
-      const bankEntry = (id, name) => {
-        if (!perBank.has(id)) perBank.set(id, { name: name || id, balance: 0, accounts: 0, txns: 0, cards: 0 });
-        return perBank.get(id);
-      };
-
+      // "Company" = branch: each bank branch in this group belongs to a
+      // distinct company, so accounts are grouped by bank+branch (never by
+      // branch number alone — branch numbers repeat across banks).
+      const bankNameById = new Map(banks.map((b) => [b.id, b.name_he]));
+      const accountGroups = new Map();
       let totalBalance = 0, activeAccounts = 0, totalTxns = 0;
       for (const bank of banks) {
-        const entry = bankEntry(bank.id, bank.name_he);
         for (const a of bank.accounts) {
           if (!a.is_active) continue;
           activeAccounts++;
@@ -211,13 +220,42 @@
           const txns = Number(a.txn_count) || 0;
           totalBalance += bal;
           totalTxns += txns;
-          entry.balance += bal;
-          entry.accounts++;
-          entry.txns += txns;
+
+          const key = `${bank.id}::${a.branch_id || '?'}`;
+          if (!accountGroups.has(key)) {
+            const name = a.corporate_name || a.branch_name
+              || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);
+            accountGroups.set(key, { name, balance: 0, txns: 0 });
+          }
+          const g = accountGroups.get(key);
+          g.balance += bal;
+          g.txns += txns;
         }
       }
-      for (const c of cards) bankEntry(c.bank_id).cards++;
-      breakdownData = Array.from(perBank.values());
+
+      // Cards have no branch — the company is whatever corporate name the
+      // card itself carries (see priority_cashname / corporate_name on the
+      // credit-cards table).
+      const cardGroups = new Map();
+      for (const c of cards) {
+        const key = c.corporate_name || `bank:${c.bank_id}`;
+        if (!cardGroups.has(key)) {
+          const name = c.corporate_name || `${bankNameById.get(c.bank_id) || c.bank_id} (ללא שם חברה)`;
+          cardGroups.set(key, { name, cards: 0 });
+        }
+        cardGroups.get(key).cards++;
+      }
+
+      const toRows = (groups, field) => Array.from(groups.values())
+        .map((g) => ({ name: g.name, value: g[field] }))
+        .filter((r) => r.value)
+        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+
+      breakdownRows = {
+        balance: toRows(accountGroups, 'balance'),
+        txns: toRows(accountGroups, 'txns'),
+        cards: toRows(cardGroups, 'cards'),
+      };
 
       const kpiVals = document.querySelectorAll('#dashboard-kpis .kpi-val');
       kpiVals[0].textContent = fmtMoney(totalBalance);
