@@ -112,6 +112,22 @@ async function renderIndex() {
       input.addEventListener('blur', commit);
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
     });
+
+    // "Show on home" toggle — independent of is_active. Unlike the active
+    // toggle, this never touches sync or Priority push; it only decides
+    // whether the account's balance counts toward the main-page panel.
+    if (summary) summary.querySelectorAll('[data-toggle-show-home]').forEach((cb) => {
+      cb.addEventListener('change', async () => {
+        const id = cb.dataset.toggleShowHome;
+        cb.disabled = true;
+        try {
+          await setAccountShowOnHome(id, cb.checked);
+        } catch (e) {
+          cb.checked = !cb.checked;
+          alert('שגיאה בעדכון: ' + e.message);
+        } finally { cb.disabled = false; }
+      });
+    });
   } catch (e) {
     container.innerHTML = `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
   }
@@ -170,6 +186,12 @@ function renderBankSummaryRow(bank) {
           <span class="slider"></span>
         </label>
       </td>
+      <td class="et-toggle">
+        <label class="toggle" title="${a.show_on_home ? 'מוצג בעמוד הראשי' : 'מוסתר מעמוד הראשי — ימשיך להסתנכרן ולהיקלט לפריוריטי כרגיל'}">
+          <input type="checkbox" data-toggle-show-home="${a.id}" ${a.show_on_home ? 'checked' : ''}>
+          <span class="slider"></span>
+        </label>
+      </td>
     </tr>
   `).join('');
 
@@ -212,6 +234,7 @@ function renderBankSummaryRow(bank) {
                 <th>מספר חשבון</th>
                 <th>סניף</th>
                 <th style="text-align:center;">פעיל</th>
+                <th style="text-align:center;">בעמוד הראשי</th>
               </tr>
             </thead>
             <tbody>${tableRows}</tbody>
@@ -227,6 +250,18 @@ async function setAccountActive(accountId, isActive) {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ active: isActive }),
+  });
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({}));
+    throw new Error(e.error || `HTTP ${r.status}`);
+  }
+}
+
+async function setAccountShowOnHome(accountId, show) {
+  const r = await fetch(`/api/accounts/${accountId}/show-on-home`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ show }),
   });
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));

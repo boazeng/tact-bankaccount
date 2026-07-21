@@ -165,7 +165,7 @@
       for (const bank of banks) {
         if (bank.last_sync_at && (!lastSync || bank.last_sync_at > lastSync)) lastSync = bank.last_sync_at;
         for (const a of bank.accounts) {
-          if (!a.is_active) continue;
+          if (!a.is_active || !a.show_on_home) continue;
           const bal = Number(a.last_balance) || 0;
           const companyName = a.corporate_name || a.branch_name
             || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);

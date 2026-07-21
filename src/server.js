@@ -16,7 +16,7 @@ import { runBankSync } from './sync-service.js';
 import {
   upsertBank,
   listBanksWithAccounts, getAccount, getTransactions,
-  setAccountActive,
+  setAccountActive, setAccountShowOnHome,
   getTransactionsForPriorityCheck, updatePriorityStatus,
   setAccountPriorityCashname, setAccountCorporateName, getTransactionsForDate,
   getEndOfDayBalance, getLastBalanceBefore, getFirstTransactionDate, getTransactionDatesInRange,
@@ -280,6 +280,14 @@ app.post('/api/accounts/:id/active', requireRole('approver'), (req, res) => {
   if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
   setAccountActive(accountId, isActive);
   res.json({ ok: true, active: isActive });
+});
+
+app.post('/api/accounts/:id/show-on-home', requireRole('approver'), (req, res) => {
+  const accountId = Number(req.params.id);
+  const show = req.body?.show !== false;
+  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  setAccountShowOnHome(accountId, show);
+  res.json({ ok: true, show });
 });
 
 // User-input bridge for in-flight syncs (SMS codes, etc.). Same auth as sync itself.

@@ -146,6 +146,12 @@ if (!txnCols.includes('pushed_to_priority_at')) {
 if (!accountCols.includes('priority_cashname')) {
   db.exec(`ALTER TABLE accounts ADD COLUMN priority_cashname TEXT`);
 }
+if (!accountCols.includes('show_on_home')) {
+  // Independent from is_active — an account can keep syncing and pushing to
+  // Priority as normal while being excluded from the main-page balances
+  // panel, for accounts whose balance just isn't interesting to see there.
+  db.exec(`ALTER TABLE accounts ADD COLUMN show_on_home INTEGER NOT NULL DEFAULT 1`);
+}
 
 // One-time backfill: Discount uses the same Urn for transfer + its associated
 // fee, so legacy rows have bank_transaction_id = bare Urn. Append the bank-
@@ -357,7 +363,7 @@ export function listBanksWithAccounts() {
   const accountsByBank = db.prepare(`
     SELECT a.id, a.bank_id, a.account_index, a.masked_number, a.corporate_name,
            a.iban, a.last_balance, a.last_sync_at, a.branch_id, a.branch_name, a.is_active,
-           a.priority_cashname,
+           a.priority_cashname, a.show_on_home,
            (SELECT COUNT(*) FROM transactions t WHERE t.account_id = a.id) AS txn_count,
            (SELECT MAX(date) FROM transactions t WHERE t.account_id = a.id) AS last_txn_date
     FROM accounts a
@@ -379,7 +385,7 @@ export function listBanksWithAccounts() {
 
   return banks.map(b => ({
     ...b,
-    accounts: accountsByBank.all(b.id).map(a => ({ ...a, is_active: a.is_active === 1 })),
+    accounts: accountsByBank.all(b.id).map(a => ({ ...a, is_active: a.is_active === 1, show_on_home: a.show_on_home === 1 })),
     branches: branchSummary.all(b.id),
     last_sync_at: lastSyncByBank.get(b.id).last_sync_at,
   }));
@@ -390,6 +396,14 @@ const stmtSetAccountActive = db.prepare(
 );
 export function setAccountActive(accountId, isActive) {
   const res = stmtSetAccountActive.run(isActive ? 1 : 0, accountId);
+  return res.changes > 0;
+}
+
+const stmtSetShowOnHome = db.prepare(
+  `UPDATE accounts SET show_on_home = ? WHERE id = ?`,
+);
+export function setAccountShowOnHome(accountId, show) {
+  const res = stmtSetShowOnHome.run(show ? 1 : 0, accountId);
   return res.changes > 0;
 }
 
