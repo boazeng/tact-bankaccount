@@ -198,6 +198,8 @@ header {
 .company-name { display: inline-flex; align-items: center; gap: 9px; color: var(--color-text); font-weight: 700; font-size: 0.98rem; }
 .company-name .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
 .company-total { color: var(--color-text); font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.company-total.pos { color: var(--color-pos); }
+.company-total.neg { color: var(--color-accent); }
 
 .company-banks { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border-soft); }
 .bank-row {
@@ -205,6 +207,8 @@ header {
   color: var(--color-text-light); padding: 3px 0;
 }
 .bank-row .amt { font-variant-numeric: tabular-nums; color: var(--color-text); }
+.bank-row .amt.pos { color: var(--color-pos); }
+.bank-row .amt.neg { color: var(--color-accent); }
 
 /* ───────── page head ───────── */
 .page-head { padding: 48px 0 32px; }

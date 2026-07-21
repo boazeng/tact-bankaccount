@@ -186,6 +186,8 @@
         ? `יתרות בבנקים ליום ${fmtDate(lastSync)}`
         : 'יתרות בבנקים';
 
+      const signCls = (v) => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
+
       const list = document.getElementById('balances-list');
       list.innerHTML = rows.length
         ? rows.map((c) => {
@@ -193,14 +195,14 @@
             const bankRows = c.banks.size > 1
               ? `<div class="company-banks">${Array.from(c.banks.values())
                   .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance))
-                  .map((b) => `<div class="bank-row"><span>${escapeHtml(b.name)}</span><span class="amt">${fmtMoney(b.balance)}</span></div>`)
+                  .map((b) => `<div class="bank-row"><span>${escapeHtml(b.name)}</span><span class="amt ${signCls(b.balance)}">${fmtMoney(b.balance)}</span></div>`)
                   .join('')}</div>`
               : '';
             return `
               <div class="company-group" style="border-color:${color}">
                 <div class="company-head">
                   <span class="company-name"><span class="dot" style="background:${color}"></span>${escapeHtml(c.name)}</span>
-                  <span class="company-total">${fmtMoney(c.total)}</span>
+                  <span class="company-total ${signCls(c.total)}">${fmtMoney(c.total)}</span>
                 </div>
                 ${bankRows}
               </div>
