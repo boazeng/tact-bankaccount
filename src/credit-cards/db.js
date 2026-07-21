@@ -318,19 +318,17 @@ export function getPriorityPreviewForCard(cardId) {
     ORDER BY purchase_date, id
   `).all(cardId);
 
-  const counts = new Map();
-  for (const t of txns) {
-    if (t.billing_date) counts.set(t.billing_date, (counts.get(t.billing_date) || 0) + 1);
-  }
-  let modeBillingDate = null;
-  let modeCount = 0;
-  for (const [date, count] of counts) {
-    if (count > modeCount) { modeBillingDate = date; modeCount = count; }
-  }
-
+  // A null billing_date is never silently folded into whatever date happens
+  // to be most common across this card's history — that used to hide a real
+  // problem: a transaction whose bank-reported DebitDate got rejected as
+  // untrustworthy (see the scraper's own sanity check) ended up back in an
+  // unrelated group anyway, through this exact fallback, reproducing a
+  // mismatch we'd already fixed at the source. Grouping it under its own
+  // explicit "לא ידוע" bucket instead makes the real problem visible instead
+  // of masking it inside a page that looks otherwise normal.
   const groups = new Map();
   for (const t of txns) {
-    const date = t.billing_date || modeBillingDate || 'לא ידוע';
+    const date = t.billing_date || 'לא ידוע';
     if (!groups.has(date)) groups.set(date, []);
     groups.get(date).push(t);
   }
@@ -343,7 +341,13 @@ export function getPriorityPreviewForCard(cardId) {
 
   const pages = [];
   for (const [curdate, group] of groups) {
-    if (curdate > today) continue;
+    // Never build a page for the "לא ידוע" bucket — a transaction with no
+    // resolvable billing_date has no real date to reconcile against, so
+    // showing/pushing it as a page would just recreate the exact "wrong
+    // total that looks internally consistent" problem this whole reconcile
+    // system exists to prevent. Left out of the preview entirely rather
+    // than guessed at.
+    if (curdate === 'לא ידוע' || curdate > today) continue;
     // amount < 0 is a purchase (debit); amount > 0 is a refund/credit the
     // bank already netted into this cycle — each keeps its own sign so the
     // closing line balances to the REAL bank charge, not a naive sum of
