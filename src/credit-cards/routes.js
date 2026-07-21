@@ -1,5 +1,6 @@
 import express from 'express';
 import crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import { requireRole } from '../auth/index.js';
 import { resolveAllCredentialsForBank } from '../secrets/bank-creds.js';
 import { bankRegistry } from '../scrapers/index.js';
@@ -11,6 +12,7 @@ import {
   listCards, getCard, getCardTransactions, getPriorityPreviewForCard,
   setCardPriorityCashname, recordPagePushed,
 } from './db.js';
+import db from './db.js';
 import { pushCardPageToPriority, checkCardPageStatus, priorityConfigured } from './priority-push.js';
 
 // Registry of bank card-scrapers implemented so far. Reuses the same
@@ -37,6 +39,29 @@ const router = express.Router();
 // two places that could drift apart as more card scrapers get added.
 router.get('/api/credit-cards/supported-banks', (req, res) => {
   res.json({ bankIds: Object.keys(cardScraperRegistry) });
+});
+
+/**
+ * Diagnostic-only: exposes which commit this running server is actually on
+ * (self-serve, no shell access needed) plus the CURRENT raw state of the
+ * 3 transactions from the 2026-07-02 cashname-103-200-4547 investigation —
+ * so "is my fix even deployed / did the data actually change" can be
+ * answered directly from a browser tab instead of guessed through the UI.
+ */
+router.get('/api/credit-cards/debug/status', (req, res) => {
+  let gitCommit = null;
+  try {
+    gitCommit = execSync('git rev-parse HEAD').toString().trim();
+  } catch (e) {
+    gitCommit = `unavailable: ${e.message}`;
+  }
+  const suspectRows = db.prepare(`
+    SELECT ct.id, ct.card_id, ct.purchase_date, ct.billing_date, ct.amount, ct.merchant_name, cc.bank_id, cc.priority_cashname
+    FROM card_transactions ct
+    JOIN credit_cards cc ON cc.id = ct.card_id
+    WHERE ct.merchant_name LIKE '%הוורביץ%' OR ct.merchant_name LIKE '%אלימלך%' OR ct.merchant_name LIKE '%אדיב%'
+  `).all();
+  res.json({ gitCommit, serverTimeNow: new Date().toISOString(), suspectRows });
 });
 
 router.get('/api/credit-cards', (req, res) => {
