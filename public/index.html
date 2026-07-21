@@ -23,8 +23,8 @@
 <main class="wrap">
   <div id="view-dashboard">
     <div class="page-head">
-      <div class="eyebrow"><b></b>DASHBOARD</div>
-      <h1>דשבורד <span class="acc">קבוצת TACT</span></h1>
+      <div class="eyebrow"><b></b>OVERVIEW</div>
+      <h1>קבוצת <span class="acc">TACT</span></h1>
     </div>
 
     <div class="action-row">
@@ -40,7 +40,7 @@
 
     <div class="dashboard-tiles">
       <button type="button" class="dash-tile" id="tile-bank" data-target="bank">
-        <span class="dash-tile-icon">🏦</span>
+        <span class="dash-tile-icon">🏛️</span>
         <span class="dash-tile-title">תנועות בנק</span>
         <span class="dash-tile-arrow">כניסה ←</span>
       </button>
@@ -58,12 +58,12 @@
   </div>
 
   <div id="view-bank" style="display:none">
-    <a href="#" class="back-link" data-back>← חזרה לדשבורד</a>
+    <a href="#" class="back-link" data-back>← חזרה לעמוד הראשי</a>
 
     <div class="page-head">
       <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
       <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
-      <p class="sub">פירוט חשבונות ותנועות מהבנקים. לסנכרון ולקליטה לפריוריטי — בדשבורד הראשי.</p>
+      <p class="sub">פירוט חשבונות ותנועות מהבנקים. לסנכרון ולקליטה לפריוריטי — בעמוד הראשי.</p>
     </div>
 
     <div id="bank-summary" class="bank-summary"></div>
@@ -74,12 +74,12 @@
   </div>
 
   <div id="view-cards" style="display:none">
-    <a href="#" class="back-link" data-back>← חזרה לדשבורד</a>
+    <a href="#" class="back-link" data-back>← חזרה לעמוד הראשי</a>
 
     <div class="page-head">
       <div class="eyebrow"><b></b>CREDIT CARDS</div>
       <h1>כרטיסי <span class="acc">אשראי</span></h1>
-      <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים, נקלט לפריוריטי כדף בנק חודשי לכל כרטיס. לסנכרון ולקליטה לפריוריטי — בדשבורד הראשי.</p>
+      <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים, נקלט לפריוריטי כדף בנק חודשי לכל כרטיס. לסנכרון ולקליטה לפריוריטי — בעמוד הראשי.</p>
     </div>
 
     <div id="cards-container">
@@ -103,7 +103,7 @@
 </div>
 
 <footer>
-  <div class="wrap">© TACT · BANK ACCOUNT DASHBOARD</div>
+  <div class="wrap">© TACT · BANK ACCOUNT SYSTEM</div>
 </footer>
 
 <script src="/app.js"></script>
@@ -156,49 +156,53 @@
       const { banks } = await banksRes.json();
       const { lastPushedAt } = await pushRes.json();
 
-      // "Company" = branch: each bank branch in this group belongs to a
-      // distinct company, so accounts are grouped by bank+branch (never by
-      // branch number alone — branch numbers repeat across banks).
-      const accountGroups = new Map();
+      // "Company" = the account's corporate name — a company can hold
+      // accounts at more than one bank (e.g. "אריאל" across 3 banks), so
+      // this groups by name and keeps a per-bank sum nested underneath,
+      // rather than one row per bank+branch.
+      const companies = new Map();
       let lastSync = null;
       for (const bank of banks) {
         if (bank.last_sync_at && (!lastSync || bank.last_sync_at > lastSync)) lastSync = bank.last_sync_at;
         for (const a of bank.accounts) {
           if (!a.is_active) continue;
           const bal = Number(a.last_balance) || 0;
+          const companyName = a.corporate_name || a.branch_name
+            || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);
 
-          const key = `${bank.id}::${a.branch_id || '?'}`;
-          if (!accountGroups.has(key)) {
-            const name = a.corporate_name || a.branch_name
-              || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);
-            accountGroups.set(key, { key, name, balance: 0 });
-          }
-          accountGroups.get(key).balance += bal;
+          if (!companies.has(companyName)) companies.set(companyName, { name: companyName, total: 0, banks: new Map() });
+          const company = companies.get(companyName);
+          company.total += bal;
+          if (!company.banks.has(bank.id)) company.banks.set(bank.id, { name: bank.name_he, balance: 0 });
+          company.banks.get(bank.id).balance += bal;
         }
       }
 
-      const rows = Array.from(accountGroups.values())
-        .filter((r) => r.balance)
-        .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
+      const rows = Array.from(companies.values())
+        .filter((c) => c.total)
+        .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
 
       document.getElementById('balances-title').textContent = lastSync
         ? `יתרות בבנקים ליום ${fmtDate(lastSync)}`
         : 'יתרות בבנקים';
 
-      const max = Math.max(1, ...rows.map((r) => Math.abs(r.balance)));
       const list = document.getElementById('balances-list');
       list.innerHTML = rows.length
-        ? rows.map((r) => {
-            const color = colorForKey(r.key);
+        ? rows.map((c) => {
+            const color = colorForKey(c.name);
+            const bankRows = c.banks.size > 1
+              ? `<div class="company-banks">${Array.from(c.banks.values())
+                  .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance))
+                  .map((b) => `<div class="bank-row"><span>${escapeHtml(b.name)}</span><span class="amt">${fmtMoney(b.balance)}</span></div>`)
+                  .join('')}</div>`
+              : '';
             return `
-              <div class="balance-bar-row">
-                <div class="balance-bar-head">
-                  <span class="balance-bar-name"><span class="dot" style="background:${color}"></span>${escapeHtml(r.name)}</span>
-                  <span class="balance-bar-value">${fmtMoney(r.balance)}</span>
+              <div class="company-group" style="border-color:${color}">
+                <div class="company-head">
+                  <span class="company-name"><span class="dot" style="background:${color}"></span>${escapeHtml(c.name)}</span>
+                  <span class="company-total">${fmtMoney(c.total)}</span>
                 </div>
-                <div class="balance-bar-track">
-                  <div class="balance-bar-fill" style="width:${Math.max(4, Math.abs(r.balance) / max * 100)}%; background:${color}"></div>
-                </div>
+                ${bankRows}
               </div>
             `;
           }).join('')

@@ -186,24 +186,25 @@ header {
 }
 .balance-bar-empty { color: var(--color-text-light); font-size: 0.9rem; padding: 8px 0; }
 
-.balance-bar-row + .balance-bar-row { margin-top: 16px; }
-.balance-bar-head {
-  display: flex; justify-content: space-between; align-items: baseline;
-  font-size: 0.92rem; margin-bottom: 6px;
+.balances-list { display: flex; flex-direction: column; gap: 14px; }
+.company-group {
+  border-inline-start: 4px solid var(--color-primary);
+  background: var(--color-bg); border-radius: var(--radius-md);
+  padding: 14px 20px;
 }
-.balance-bar-name { display: inline-flex; align-items: center; gap: 8px; color: var(--color-text); font-weight: 700; }
-.balance-bar-name .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
-.balance-bar-value { color: var(--color-text); font-weight: 700; font-variant-numeric: tabular-nums; }
-.balance-bar-track {
-  position: relative; height: 12px; border-radius: 6px 0 0 6px;
-  background: var(--color-border-soft);
-  overflow: hidden;
+.company-head {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
 }
-.balance-bar-fill {
-  position: absolute; top: 0; right: 0; height: 100%; min-width: 6px;
-  border-radius: 6px 0 0 6px;
-  transition: width 0.5s ease;
+.company-name { display: inline-flex; align-items: center; gap: 9px; color: var(--color-text); font-weight: 700; font-size: 0.98rem; }
+.company-name .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.company-total { color: var(--color-text); font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+.company-banks { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--color-border-soft); }
+.bank-row {
+  display: flex; justify-content: space-between; font-size: 0.86rem;
+  color: var(--color-text-light); padding: 3px 0;
 }
+.bank-row .amt { font-variant-numeric: tabular-nums; color: var(--color-text); }
 
 /* ───────── page head ───────── */
 .page-head { padding: 48px 0 32px; }
