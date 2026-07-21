@@ -219,11 +219,20 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
           const purchaseDate = (rawPurchaseDate && Number(rawPurchaseDate.slice(0, 4)) >= 2000)
             ? rawPurchaseDate
             : (cycleBillingDate || ymdToIso(t.debitDate) || null);
+          const debitDateIso = ymdToIso(t.debitDate);
+          // A debit can't happen before the purchase that caused it — the
+          // bank does sometimes return exactly that (see the same guard in
+          // the Discount scraper, confirmed live and reproducible on
+          // re-sync, not a one-off glitch). Untrustworthy when it fails that
+          // basic check; fall back to the cycle's headline date instead.
+          const billingDate = (debitDateIso && (!purchaseDate || debitDateIso >= purchaseDate))
+            ? debitDateIso
+            : (cycleBillingDate || null);
           return {
             // transactionIndexNumber is the bank's own stable per-transaction id.
             transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
             purchaseDate,
-            billingDate: ymdToIso(t.debitDate) || cycleBillingDate || null,
+            billingDate,
             merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
             // Bank convention: positive = charge, negative = refund/credit.
             // Flipped to match this app's convention (negative = expense),

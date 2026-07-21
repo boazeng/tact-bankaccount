@@ -184,13 +184,24 @@ export async function scrapeDiscountCards({ credentials, showBrowser = false, on
           // checked against real captures from both, not guessed.
           const purchaseCcy = e.PurchaseCurrencyCode || e.CalPurchaseCurrencySymbol || 'ILS';
           const debitCcy = e.DebitCurrencyCode || e.DebitCurrencySymbol || e.CalDebitCurrencySymbol || purchaseCcy;
+          const purchaseDateIso = ymdToIso(e.PurchaseDate);
+          const debitDateIso = ymdToIso(e.DebitDate);
+          // A debit can't happen before the purchase that caused it — but the
+          // bank does sometimes return exactly that (confirmed live: DebitDate
+          // 2026-07-02 on a purchase dated 2026-07-07, reproduced identically
+          // on a later re-sync, so not a one-off glitch). When DebitDate fails
+          // that basic sanity check it isn't trustworthy for this transaction;
+          // fall back to the cycle's headline date instead of trusting it blindly.
+          const billingDate = (debitDateIso && (!purchaseDateIso || debitDateIso >= purchaseDateIso))
+            ? debitDateIso
+            : (cycleBillingDate || null);
           return {
             // OrderNumerator disambiguates genuinely identical charges (same
             // date/time/merchant/amount) that the bank lists as separate lines —
             // observed in practice, not hypothetical (see plan verification notes).
             transactionID: [e.PurchaseDate, e.PurchaseTime, card.CardNumber, e.MerchantName, e.PurchaseAmount, e.OrderNumerator].filter(v => v != null).join('|'),
-            purchaseDate: ymdToIso(e.PurchaseDate),
-            billingDate: ymdToIso(e.DebitDate) || cycleBillingDate || null,
+            purchaseDate: purchaseDateIso,
+            billingDate,
             merchantName: (e.MerchantName || '').trim() || null,
             // Preserve the bank's sign — forcing abs() here previously turned
             // refunds/credits into extra debits, inflating the page total
