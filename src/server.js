@@ -18,7 +18,7 @@ import {
   setAccountActive, getInactiveMaskedNumbers,
   getTransactionsForPriorityCheck, updatePriorityStatus,
   getAccountBalances,
-  setAccountPriorityCashname, getTransactionsForPush, getTransactionsForDate,
+  setAccountPriorityCashname, setAccountCorporateName, getTransactionsForPush, getTransactionsForDate,
   getEndOfDayBalance, getLastBalanceBefore, getFirstTransactionDate, getTransactionDatesInRange,
   getTransactionsForBalanceCheck,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
@@ -551,6 +551,14 @@ app.put('/api/accounts/:id/priority-cashname', requireRole('approver'), (req, re
   const cashname = (req.body?.cashname || '').trim() || null;
   setAccountPriorityCashname(accountId, cashname);
   res.json({ ok: true, cashname });
+});
+
+app.put('/api/accounts/:id/corporate-name', requireRole('approver'), (req, res) => {
+  const accountId = Number(req.params.id);
+  if (!getAccount(accountId)) return res.status(404).json({ error: 'Account not found' });
+  const corporateName = (req.body?.corporateName || '').trim() || null;
+  setAccountCorporateName(accountId, corporateName);
+  res.json({ ok: true, corporateName });
 });
 
 app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (req, res) => {

@@ -493,6 +493,13 @@ export function batchSetPriorityCashnames(updates) {
   tx(updates);
 }
 
+const stmtSetCorporateName = db.prepare(
+  `UPDATE accounts SET corporate_name = ? WHERE id = ?`,
+);
+export function setAccountCorporateName(accountId, name) {
+  stmtSetCorporateName.run(name ?? null, accountId);
+}
+
 export function getEndOfDayBalance(accountId, date) {
   return db.prepare(`
     SELECT running_balance FROM transactions

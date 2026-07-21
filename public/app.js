@@ -101,6 +101,17 @@ async function renderIndex() {
         } finally { cb.disabled = false; }
       });
     });
+
+    // Company name is editable per account — accounts across different
+    // banks that share the exact same name are grouped as one company on
+    // the main page, so fixing a bank's own inconsistent spelling here is
+    // how two accounts of the same real-world company end up merged.
+    if (summary) summary.querySelectorAll('.corp-name-input').forEach((input) => {
+      input.addEventListener('click', (e) => e.stopPropagation());
+      const commit = () => saveCorporateName(input.dataset.accountId, input.value, input);
+      input.addEventListener('blur', commit);
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+    });
   } catch (e) {
     container.innerHTML = `<div class="empty"><h3>שגיאת טעינה</h3><p>${escapeHtml(e.message)}</p></div>`;
   }
@@ -147,7 +158,10 @@ function renderBankSummaryRow(bank) {
 
   const tableRows = bank.accounts.map(a => `
     <tr class="${a.is_active ? '' : 'inactive'}" data-account-row="${a.id}">
-      <td class="et-name">${escapeHtml(a.corporate_name || '—')}</td>
+      <td class="et-name">
+        <input type="text" class="corp-name-input" data-account-id="${a.id}" value="${escapeHtml(a.corporate_name || '')}" placeholder="שם החברה" title="שם החברה — לחצי כדי לערוך. חברות עם אותו שם בדיוק מאוחדות יחד בעמוד הראשי.">
+        <span class="corp-name-status" data-account-id="${a.id}"></span>
+      </td>
       <td class="et-num">${escapeHtml(a.masked_number)}</td>
       <td class="et-branch">${escapeHtml(a.branch_id || '—')}${a.branch_name ? ' — ' + escapeHtml(a.branch_name) : ''}</td>
       <td class="et-toggle">
@@ -217,6 +231,29 @@ async function setAccountActive(accountId, isActive) {
   if (!r.ok) {
     const e = await r.json().catch(() => ({}));
     throw new Error(e.error || `HTTP ${r.status}`);
+  }
+}
+
+async function saveCorporateName(accountId, name, inputEl) {
+  const status = document.querySelector(`.corp-name-status[data-account-id="${accountId}"]`);
+  try {
+    const r = await fetch(`/api/accounts/${accountId}/corporate-name`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ corporateName: name }),
+    });
+    if (!r.ok) {
+      const e = await r.json().catch(() => ({}));
+      throw new Error(e.error || `HTTP ${r.status}`);
+    }
+    if (status) {
+      status.textContent = '✓';
+      status.style.color = 'var(--color-pos)';
+      setTimeout(() => { status.textContent = ''; }, 2000);
+    }
+  } catch (e) {
+    if (status) { status.textContent = 'שגיאה: ' + e.message; status.style.color = 'var(--color-neg)'; }
+    if (inputEl) inputEl.title = 'שגיאה בשמירה: ' + e.message;
   }
 }
 
