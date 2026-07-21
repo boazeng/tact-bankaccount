@@ -1,0 +1,137 @@
+// Shared bank-sync logic — used by both the interactive SSE route
+// (POST /api/banks/:bankId/sync) and the unattended daily scheduler.
+// Pulled out of server.js verbatim so the two callers can't drift apart;
+// the only thing that differs between them is how progress is reported
+// (onEvent) and how SMS prompts are handled (onSmsRequired).
+import { getBank, bankRegistry } from './scrapers/index.js';
+import {
+  upsertAccount, insertTransactions, updateLastSync,
+  getInactiveMaskedNumbers, getTransactionsForBalanceCheck,
+} from './db.js';
+import { resolveAllCredentialsForBank } from './secrets/bank-creds.js';
+import { checkBalanceContinuity } from './balance-check.js';
+
+/**
+ * Syncs every account for one bank across all configured credential sets.
+ * Returns the same shape the SSE route used to send as its 'done' event.
+ * Throws on hard failures (unknown bank, missing/incomplete credentials,
+ * scrape error) — callers decide how to surface that (SSE 'error' event,
+ * or a caught/logged entry in the scheduler's summary).
+ */
+export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEvent = () => {}, onSmsRequired } = {}) {
+  const bank = getBank(bankId);
+
+  const allCredentialSets = resolveAllCredentialsForBank(bankId, bankRegistry, actor);
+  if (!allCredentialSets.length) {
+    throw new Error(`אין פרטי כניסה מוגדרים ל-${bankId} — הגדר ב-/bank-credentials.html`);
+  }
+  for (const { label, credentials } of allCredentialSets) {
+    const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
+    if (missing.length) {
+      throw new Error(`חסרים פרטי כניסה עבור "${label}" (${bankId}): ${missing.join(', ')}`);
+    }
+  }
+
+  onEvent('progress', { step: 'start', message: `מתחיל סנכרון ${bank.info.nameHe} (${daysBack} ימים)` });
+
+  const inactiveSet = getInactiveMaskedNumbers(bankId);
+  let totalNew = 0;
+  let totalAll = 0;
+  let skippedInactive = 0;
+  const perAccount = [];
+  let lastResult = null;
+
+  for (const { label, credentials } of allCredentialSets) {
+    if (allCredentialSets.length > 1) {
+      onEvent('progress', { step: 'credential', message: `מתחבר עם פרטי כניסה: "${label}"` });
+    }
+
+    const result = await bank.scrape({
+      credentials,
+      daysBack,
+      onProgress: (p) => onEvent('progress', p),
+      onSmsRequired,
+    });
+    lastResult = result;
+
+    for (const accResult of result.accounts) {
+      const accountId = upsertAccount({
+        bankId,
+        accountIndex: accResult.account.accountIndex,
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        iban: accResult.account.iban,
+        balance: accResult.account.balance,
+        branchId: accResult.account.branchId,
+        branchName: accResult.account.branchName,
+      });
+
+      if (inactiveSet.has(accResult.account.maskedNumber)) {
+        skippedInactive++;
+        onEvent('account-skipped', {
+          maskedNumber: accResult.account.maskedNumber,
+          corporateName: accResult.account.corporateName,
+          reason: 'inactive',
+        });
+        continue;
+      }
+
+      const todayStr = new Date().toISOString().slice(0, 10);
+      const historyToSave = accResult.transactions.history.filter(t => (t.date || '').slice(0, 10) < todayStr);
+      const pendingToSave = accResult.transactions.pending.filter(t => (t.date || '').slice(0, 10) < todayStr);
+      const newHistory = insertTransactions(accountId, historyToSave, { status: 'completed' });
+      const newPending = insertTransactions(accountId, pendingToSave, { status: 'pending' });
+      const newCount = newHistory + newPending;
+      const fetched = historyToSave.length + pendingToSave.length;
+
+      updateLastSync(accountId, accResult.account.balance);
+
+      try {
+        const balanceResult = checkBalanceContinuity(getTransactionsForBalanceCheck(accountId));
+        if (!balanceResult.ok) {
+          onEvent('balance-check', {
+            accountId,
+            maskedNumber: accResult.account.maskedNumber,
+            corporateName: accResult.account.corporateName,
+            mismatches: balanceResult.mismatches.slice(0, 10),
+          });
+        }
+      } catch (e) {
+        console.warn('[sync] balance-continuity check failed:', e.message);
+      }
+
+      totalNew += newCount;
+      totalAll += fetched;
+      perAccount.push({
+        accountId,
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        fetched,
+        newSaved: newCount,
+        dedupSkipped: fetched - newCount,
+      });
+
+      onEvent('account-saved', {
+        maskedNumber: accResult.account.maskedNumber,
+        corporateName: accResult.account.corporateName,
+        fetched,
+        newSaved: newCount,
+        dedupSkipped: fetched - newCount,
+      });
+    }
+  }
+
+  return {
+    bankId,
+    bankName: bank.info.nameHe,
+    daysBack,
+    fromDate: lastResult?.fromDate,
+    toDate: lastResult?.toDate,
+    accountsCount: perAccount.length,
+    skippedInactive,
+    totalFetched: totalAll,
+    totalNewSaved: totalNew,
+    totalDedupSkipped: totalAll - totalNew,
+    perAccount,
+  };
+}

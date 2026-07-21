@@ -12,52 +12,22 @@ tryLoadEnv(process.env.SHARED_ENV_FILE || 'C:/Users/User/Aiprojects/env/.env');
 tryLoadEnv(process.env.BANK_ENV_FILE || 'C:/Users/User/Aiprojects/env/bank.env');
 
 import { bankRegistry, getBank, listBanks } from './scrapers/index.js';
+import { runBankSync } from './sync-service.js';
 import {
-  upsertBank, upsertAccount, insertTransactions, updateLastSync,
+  upsertBank,
   listBanksWithAccounts, getAccount, getTransactions,
-  setAccountActive, getInactiveMaskedNumbers,
+  setAccountActive,
   getTransactionsForPriorityCheck, updatePriorityStatus,
-  getAccountBalances,
-  setAccountPriorityCashname, setAccountCorporateName, getTransactionsForPush, getTransactionsForDate,
+  setAccountPriorityCashname, setAccountCorporateName, getTransactionsForDate,
   getEndOfDayBalance, getLastBalanceBefore, getFirstTransactionDate, getTransactionDatesInRange,
-  getTransactionsForBalanceCheck,
-  batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
+  markTransactionsPushed, deleteTransaction,
   getLastPushedAt,
 } from './db.js';
 import { getLastCardPushedAt } from './credit-cards/db.js';
-import { checkBalanceContinuity } from './balance-check.js';
 
-const FLOW_BALANCE_MAPPING = [
-  { bankId: 'poalim',   match: 'חניה',   flowKey: 'חניה_פועלים' },
-  { bankId: 'poalim',   match: 'אנרגיה', flowKey: 'אנרגיה_פועלים' },
-  { bankId: 'discount', match: null,      flowKey: 'אחזקה_דיסקונט' },
-  { bankId: 'mizrachi', match: null,      flowKey: 'אחזקה_מזרחי' },
-];
-
-async function pushBalancesToFlow() {
-  const flowUrl = process.env.FLOW_API_URL;
-  const flowKey = process.env.FLOW_API_KEY;
-  if (!flowUrl || !flowKey) return;
-
-  const accounts = getAccountBalances();
-  const payload = {};
-  for (const rule of FLOW_BALANCE_MAPPING) {
-    const acc = accounts.find(a =>
-      a.bank_id === rule.bankId &&
-      (!rule.match || (a.corporate_name || '').includes(rule.match))
-    );
-    if (acc != null) payload[rule.flowKey] = acc.last_balance;
-  }
-  if (Object.keys(payload).length === 0) return;
-
-  const res = await fetch(`${flowUrl}/api/bank-balances-push`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${flowKey}` },
-    body: JSON.stringify(payload),
-  });
-  if (!res.ok) throw new Error(`flow responded ${res.status}`);
-  console.log('[flow-push] balances pushed:', payload);
-}
+import { pushBalancesToFlow } from './flow-push.js';
+import { autoMatchCashnames, pushAccountToPriority } from './priority-service.js';
+import { startDailyScheduler } from './scheduler.js';
 import { checkAgainstPriority, priorityConfigured, fetchCashBanks, matchCashnameToAccount, fetchBankPages, fetchPriorityLines, shiftDate, findLastLoadedPage, pickBalanceField } from './priority/check.js';
 import { pushToPriority, buildBankLinePayload } from './priority/push.js';
 import { installAuth, requireRole } from './auth/index.js';
@@ -66,7 +36,6 @@ import {
   addCredentials as addBankCredentials,
   updateCredentials as updateBankCredentials,
   deleteCredentials as deleteBankCredentials,
-  resolveAllCredentialsForBank,
   bootstrapFromEnvIfEmpty as bootstrapBankCredsFromEnv,
 } from './secrets/bank-creds.js';
 import { vaultConfigured } from './secrets/vault.js';
@@ -140,9 +109,8 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
   const bankId = req.params.bankId;
   const daysBack = Math.min(Number(req.query.days) || 30, 365);
 
-  let bank;
   try {
-    bank = getBank(bankId);
+    getBank(bankId);
   } catch {
     return res.status(404).json({ error: `Unknown bank: ${bankId}` });
   }
@@ -157,19 +125,6 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
   const send = (event, data) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-
-  const allCredentialSets = resolveAllCredentialsForBank(bankId, bankRegistry, req.user?.email || 'sync');
-  if (!allCredentialSets.length) {
-    send('error', { message: `אין פרטי כניסה מוגדרים ל-${bankId} — הגדר ב-/bank-credentials.html` });
-    return res.end();
-  }
-  for (const { label, credentials } of allCredentialSets) {
-    const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
-    if (missing.length) {
-      send('error', { message: `חסרים פרטי כניסה עבור "${label}" (${bankId}): ${missing.join(', ')}` });
-      return res.end();
-    }
-  }
 
   // SMS / interactive input bridge: scraper calls onSmsRequired, server emits
   // an SSE event with the syncId, UI posts the code back to /api/sync/:syncId/sms-code,
@@ -195,112 +150,13 @@ app.post('/api/banks/:bankId/sync', requireRole('approver'), async (req, res) =>
 
   try {
     send('sync-started', { syncId, bankId, daysBack });
-    send('progress', { step: 'start', message: `מתחיל סנכרון ${bank.info.nameHe} (${daysBack} ימים)` });
-
-    const inactiveSet = getInactiveMaskedNumbers(bankId);
-    let totalNew = 0;
-    let totalAll = 0;
-    let skippedInactive = 0;
-    const perAccount = [];
-    let lastResult = null;
-
-    for (const { label, credentials } of allCredentialSets) {
-      if (allCredentialSets.length > 1) {
-        send('progress', { step: 'credential', message: `מתחבר עם פרטי כניסה: "${label}"` });
-      }
-
-      const result = await bank.scrape({
-        credentials,
-        daysBack,
-        onProgress: (p) => send('progress', p),
-        onSmsRequired,
-      });
-      lastResult = result;
-
-      for (const accResult of result.accounts) {
-        const accountId = upsertAccount({
-          bankId,
-          accountIndex: accResult.account.accountIndex,
-          maskedNumber: accResult.account.maskedNumber,
-          corporateName: accResult.account.corporateName,
-          iban: accResult.account.iban,
-          balance: accResult.account.balance,
-          branchId: accResult.account.branchId,
-          branchName: accResult.account.branchName,
-        });
-
-        if (inactiveSet.has(accResult.account.maskedNumber)) {
-          skippedInactive++;
-          send('account-skipped', {
-            maskedNumber: accResult.account.maskedNumber,
-            corporateName: accResult.account.corporateName,
-            reason: 'inactive',
-          });
-          continue;
-        }
-
-        const todayStr = new Date().toISOString().slice(0, 10);
-        const historyToSave = accResult.transactions.history.filter(t => (t.date || '').slice(0, 10) < todayStr);
-        const pendingToSave = accResult.transactions.pending.filter(t => (t.date || '').slice(0, 10) < todayStr);
-        const newHistory = insertTransactions(accountId, historyToSave, { status: 'completed' });
-        const newPending = insertTransactions(accountId, pendingToSave, { status: 'pending' });
-        const newCount = newHistory + newPending;
-        const fetched = historyToSave.length + pendingToSave.length;
-
-        updateLastSync(accountId, accResult.account.balance);
-
-        // Balance-continuity check — verifies the scrape itself (not Priority)
-        // produced an unbroken running-balance chain. Runs right after every
-        // sync so a missing/duplicate bank-side transaction surfaces immediately
-        // instead of waiting for someone to open the account page and notice.
-        try {
-          const balanceResult = checkBalanceContinuity(getTransactionsForBalanceCheck(accountId));
-          if (!balanceResult.ok) {
-            send('balance-check', {
-              accountId,
-              maskedNumber: accResult.account.maskedNumber,
-              corporateName: accResult.account.corporateName,
-              mismatches: balanceResult.mismatches.slice(0, 10),
-            });
-          }
-        } catch (e) {
-          console.warn('[sync] balance-continuity check failed:', e.message);
-        }
-
-        totalNew += newCount;
-        totalAll += fetched;
-        perAccount.push({
-          accountId,
-          maskedNumber: accResult.account.maskedNumber,
-          corporateName: accResult.account.corporateName,
-          fetched,
-          newSaved: newCount,
-          dedupSkipped: fetched - newCount,
-        });
-
-        send('account-saved', {
-          maskedNumber: accResult.account.maskedNumber,
-          corporateName: accResult.account.corporateName,
-          fetched,
-          newSaved: newCount,
-          dedupSkipped: fetched - newCount,
-        });
-      }
-    }
-
-    send('done', {
-      bankId,
-      bankName: bank.info.nameHe,
+    const result = await runBankSync(bankId, {
       daysBack,
-      fromDate: lastResult?.fromDate,
-      toDate: lastResult?.toDate,
-      accountsCount: perAccount.length,
-      skippedInactive,
-      totalFetched: totalAll,
-      totalNewSaved: totalNew,
-      totalDedupSkipped: totalAll - totalNew,
-      perAccount,
+      actor: req.user?.email || 'sync',
+      onEvent: send,
+      onSmsRequired,
     });
+    send('done', result);
     pushBalancesToFlow().catch(e => console.error('[flow-push] failed:', e.message));
   } catch (err) {
     console.error('Sync error:', err);
@@ -443,41 +299,11 @@ app.post('/api/sync/:syncId/sms-code', requireRole('approver'), (req, res) => {
 // Auto-match all accounts to their Priority CASHNAME based on branch+account number.
 // Saves the matches to DB and returns per-account results.
 app.post('/api/priority/auto-match-cashnames', requireRole('approver'), async (req, res) => {
-  if (!priorityConfigured()) {
-    return res.status(500).json({ error: 'Priority not configured in env' });
-  }
   try {
-    const cashBanks = await fetchCashBanks();
-    const banks = listBanksWithAccounts();
-    const allAccounts = banks.flatMap(b => b.accounts.filter(a => a.is_active));
-
-    const updates = [];
-    const results = allAccounts.map(acc => {
-      const cashname = matchCashnameToAccount(acc, cashBanks);
-      if (cashname) updates.push({ accountId: acc.id, cashname });
-      return {
-        accountId: acc.id,
-        maskedNumber: acc.masked_number,
-        corporateName: acc.corporate_name,
-        cashname,
-        matched: !!cashname,
-      };
-    });
-
-    if (updates.length) batchSetPriorityCashnames(updates);
-
-    res.json({
-      ok: true,
-      matched: updates.length,
-      unmatched: allAccounts.length - updates.length,
-      results,
-      cashBanksCount: cashBanks.length,
-      // First record fields — lets us verify the exact Priority field names
-      cashBanksSample: cashBanks[0] ? Object.keys(cashBanks[0]) : [],
-    });
+    res.json(await autoMatchCashnames());
   } catch (e) {
     console.error('auto-match-cashnames error:', e);
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 
@@ -564,101 +390,11 @@ app.put('/api/accounts/:id/corporate-name', requireRole('approver'), (req, res) 
 app.post('/api/accounts/:id/push-to-priority', requireRole('approver'), async (req, res) => {
   const accountId = Number(req.params.id);
   const isPreview = req.query.preview === 'true';
-  const acc = getAccount(accountId);
-  if (!acc) return res.status(404).json({ error: 'Account not found' });
-  if (!priorityConfigured()) {
-    return res.status(500).json({ error: 'Priority not configured in env' });
-  }
-  if (!acc.priority_cashname) {
-    // Try to auto-discover the cashname from Priority's CASH_BANKS before giving up
-    try {
-      const cashBanks = await fetchCashBanks();
-      const discovered = matchCashnameToAccount(acc, cashBanks);
-      if (discovered) {
-        setAccountPriorityCashname(accountId, discovered);
-        acc = { ...acc, priority_cashname: discovered };
-      }
-    } catch {}
-    if (!acc.priority_cashname) {
-      return res.status(400).json({ error: 'לא הוגדר שם קופה בפריוריטי לחשבון זה' });
-    }
-  }
   try {
-    // Step 1: check which transactions exist in Priority (updates in_priority column)
-    const allTxns = getTransactionsForPriorityCheck(accountId);
-    const checkResult = await checkAgainstPriority(allTxns, acc.priority_cashname || null);
-    updatePriorityStatus(checkResult.updates);
-
-    // Step 2: collect transactions not found in Priority and not yet pushed
-    const missing = getTransactionsForPush(accountId);
-
-    // Step 2.5: never auto-push a transaction dated before the most recent BANKPAGES
-    // already loaded in Priority — a "missing" match there almost always means it was
-    // entered manually under a different reference number, not that it's truly absent.
-    // Pushing it anyway creates a duplicate (see the 2026-06-21 check-deposit incident).
-    let minPushDate = null;
-    try {
-      const lastPage = await findLastLoadedPage(acc.priority_cashname);
-      if (lastPage) minPushDate = (lastPage.CURDATE || '').slice(0, 10);
-    } catch (e) {
-      console.warn('[push-to-priority] findLastLoadedPage failed, skipping old-date guard:', e.message);
-    }
-    const toPush = minPushDate ? missing.filter(t => t.date >= minPushDate) : missing;
-    const skippedOld = minPushDate ? missing.filter(t => t.date < minPushDate) : [];
-
-    if (isPreview) {
-      const lines = toPush.map(t => ({ _txnId: t.id, ...buildBankLinePayload(t, acc.bank_id) }));
-      return res.json({
-        ok: true,
-        dryRun: true,
-        accountId,
-        cashName: acc.priority_cashname,
-        checked: checkResult.ourTxnsChecked,
-        matched: checkResult.matched,
-        missing: toPush.length,
-        preview: lines.slice(0, 50),
-        previewTotal: lines.length,
-        bankBalance: acc.last_balance,
-        dateRange: checkResult.dateRange,
-        fenceDate: checkResult.fenceDate || null,
-        balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
-        minPushDate,
-        skippedOld: skippedOld.map(t => ({ id: t.id, date: t.date, amount: t.amount })),
-      });
-    }
-
-    // Step 3: push missing transactions to Priority
-    const { pushed, failed } = await pushToPriority(toPush, acc.priority_cashname, acc.bank_id);
-    if (pushed.length > 0) markTransactionsPushed(pushed);
-
-    const pushedSet = new Set(pushed);
-    const pushedLines = toPush
-      .filter(t => pushedSet.has(t.id))
-      .map(t => buildBankLinePayload(t, acc.bank_id));
-
-    res.json({
-      ok: true,
-      dryRun: false,
-      accountId,
-      cashName: acc.priority_cashname,
-      checked: checkResult.ourTxnsChecked,
-      matched: checkResult.matched,
-      pushed: pushed.length,
-      failed: failed.length,
-      missing: failed.length,
-      failedDetails: failed.slice(0, 10),
-      preview: pushedLines.slice(0, 50),
-      previewTotal: pushed.length,
-      bankBalance: acc.last_balance,
-      dateRange: checkResult.dateRange,
-      fenceDate: checkResult.fenceDate || null,
-      balanceDiscrepancy: checkResult.balanceDiscrepancy || null,
-      minPushDate,
-      skippedOld: skippedOld.map(t => ({ id: t.id, date: t.date, amount: t.amount })),
-    });
+    res.json(await pushAccountToPriority(accountId, { preview: isPreview }));
   } catch (e) {
     console.error('Push to Priority error:', e);
-    res.status(500).json({ error: e.message });
+    res.status(e.status || 500).json({ error: e.message });
   }
 });
 
@@ -879,3 +615,5 @@ app.listen(PORT, () => {
   console.log(`TACT BankAccount running at http://localhost:${PORT}`);
   console.log(`OAuth redirect URI: ${REDIRECT_URI}`);
 });
+
+startDailyScheduler();

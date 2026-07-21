@@ -18,7 +18,7 @@ import { pushCardPageToPriority, checkCardPageStatus, priorityConfigured } from 
 // Registry of bank card-scrapers implemented so far. Reuses the same
 // bankRegistry entries from src/scrapers/index.js only for credential shape
 // resolution (resolveAllCredentialsForBank needs it) — no scraping code is shared.
-const cardScraperRegistry = {
+export const cardScraperRegistry = {
   [discountCardsInfo.id]: { info: discountCardsInfo, scrape: scrapeDiscountCards },
   [poalimCardsInfo.id]: { info: poalimCardsInfo, scrape: scrapePoalimCards },
   [leumiCardsInfo.id]: { info: leumiCardsInfo, scrape: scrapeLeumiCards },
@@ -127,7 +127,7 @@ router.put('/api/credit-cards/:cardId/cashname', requireRole('admin'), (req, res
  * repeatedly: a fully-complete page is a fast no-op (findExistingCardPage +
  * one BANKLINESA lookup, nothing to POST).
  */
-async function pushCardToPriority(card) {
+export async function pushCardToPriority(card) {
   const today = new Date().toISOString().slice(0, 10);
   const pages = getPriorityPreviewForCard(card.id);
   const results = [];
@@ -188,8 +188,8 @@ router.post('/api/credit-cards/:cardId/push-to-priority', requireRole('approver'
   }
 });
 
-router.post('/api/credit-cards/push-all-to-priority', requireRole('approver'), async (req, res) => {
-  if (!priorityConfigured()) return res.status(500).json({ error: 'פריוריטי לא מוגדר (PRIORITY_URL_REAL/PRIORITY_USERNAME/PRIORITY_PASSWORD)' });
+export async function pushAllCardsToPriority() {
+  if (!priorityConfigured()) throw new Error('פריוריטי לא מוגדר (PRIORITY_URL_REAL/PRIORITY_USERNAME/PRIORITY_PASSWORD)');
 
   const cards = listCards().filter(c => c.priority_cashname);
   const byCard = [];
@@ -201,13 +201,94 @@ router.post('/api/credit-cards/push-all-to-priority', requireRole('approver'), a
       byCard.push({ cardId: card.id, cardLast4: card.card_last4, error: e.message });
     }
   }
-  res.json({ byCard });
+  return { byCard };
+}
+
+router.post('/api/credit-cards/push-all-to-priority', requireRole('approver'), async (req, res) => {
+  try {
+    res.json(await pushAllCardsToPriority());
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
+
+/**
+ * Syncs every card for one bank across all configured credential sets.
+ * Shared by the interactive SSE route below and the daily scheduler —
+ * onEvent replaces res.write, onSmsRequired is supplied by the caller
+ * (SSE bridge for the route, immediate-skip for the unattended scheduler).
+ */
+export async function runCardBankSync(bankId, { actor = 'sync-cards', onEvent = () => {}, onSmsRequired } = {}) {
+  const bank = cardScraperRegistry[bankId];
+  if (!bank) throw new Error(`אין תמיכה עדיין בכרטיסי אשראי לבנק: ${bankId}`);
+
+  const allCredentialSets = resolveAllCredentialsForBank(bankId, bankRegistry, actor);
+  if (!allCredentialSets.length) {
+    throw new Error(`אין פרטי כניסה מוגדרים ל-${bankId} — הגדר ב-/bank-credentials.html`);
+  }
+
+  onEvent('progress', { step: 'start', message: `מתחיל סנכרון כרטיסי אשראי — ${bank.info.nameHe}` });
+
+  let totalNewTxns = 0;
+  let totalCards = 0;
+
+  for (const { label, credentials } of allCredentialSets) {
+    const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
+    if (missing.length) {
+      onEvent('progress', { step: 'credential-skip', message: `דילוג על "${label}": חסרים ${missing.join(', ')}` });
+      continue;
+    }
+
+    const result = await bank.scrape({
+      credentials,
+      onProgress: (p) => onEvent('progress', p),
+      onSmsRequired,
+    });
+
+    for (const entry of result.cards) {
+      const cardId = upsertCard({
+        bankId,
+        accountMaskedNumber: entry.account.maskedNumber,
+        cardLast4: entry.card.cardLast4,
+        label: entry.card.label,
+        corporateName: entry.account.corporateName,
+      });
+      const newCount = insertCardTransactions(cardId, entry.transactions);
+
+      // Remove rows for this same cycle that the bank no longer reports —
+      // e.g. an entry the scraper previously mis-included and has since
+      // learned to exclude (see the "not yet finalized" fix). Only cleans
+      // up billing_dates actually present in this synced batch; other
+      // cycles are untouched. A batch can span more than one billing_date
+      // (e.g. a foreign-currency charge debited on its own earlier date
+      // within the same cycle), so every distinct date gets its own pass.
+      const billingDates = [...new Set(entry.transactions.map(t => t.billingDate).filter(Boolean))];
+      const keepIds = entry.transactions.map(t => t.transactionID);
+      const staleRemoved = billingDates.reduce(
+        (sum, date) => sum + deleteStaleCardTransactions(cardId, date, keepIds),
+        0,
+      );
+
+      updateCardLastSync(cardId);
+      totalCards++;
+      totalNewTxns += newCount;
+
+      onEvent('card-saved', {
+        cardLast4: entry.card.cardLast4,
+        account: entry.account.maskedNumber,
+        fetched: entry.transactions.length,
+        newSaved: newCount,
+        staleRemoved,
+      });
+    }
+  }
+
+  return { bankId, totalCards, totalNewTxns };
+}
 
 router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (req, res) => {
   const bankId = req.params.bankId;
-  const bank = cardScraperRegistry[bankId];
-  if (!bank) return res.status(404).json({ error: `אין תמיכה עדיין בכרטיסי אשראי לבנק: ${bankId}` });
+  if (!cardScraperRegistry[bankId]) return res.status(404).json({ error: `אין תמיכה עדיין בכרטיסי אשראי לבנק: ${bankId}` });
 
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
@@ -217,12 +298,6 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
   const send = (event, data) => {
     res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
   };
-
-  const allCredentialSets = resolveAllCredentialsForBank(bankId, bankRegistry, req.user?.email || 'sync-cards');
-  if (!allCredentialSets.length) {
-    send('error', { message: `אין פרטי כניסה מוגדרים ל-${bankId} — הגדר ב-/bank-credentials.html` });
-    return res.end();
-  }
 
   const syncId = crypto.randomUUID();
 
@@ -250,63 +325,12 @@ router.post('/api/credit-cards/:bankId/sync', requireRole('approver'), async (re
 
   try {
     send('sync-started', { syncId, bankId });
-    send('progress', { step: 'start', message: `מתחיל סנכרון כרטיסי אשראי — ${bank.info.nameHe}` });
-
-    let totalNewTxns = 0;
-    let totalCards = 0;
-
-    for (const { label, credentials } of allCredentialSets) {
-      const missing = Object.entries(credentials).filter(([_, v]) => !v).map(([k]) => k);
-      if (missing.length) {
-        send('progress', { step: 'credential-skip', message: `דילוג על "${label}": חסרים ${missing.join(', ')}` });
-        continue;
-      }
-
-      const result = await bank.scrape({
-        credentials,
-        onProgress: (p) => send('progress', p),
-        onSmsRequired,
-      });
-
-      for (const entry of result.cards) {
-        const cardId = upsertCard({
-          bankId,
-          accountMaskedNumber: entry.account.maskedNumber,
-          cardLast4: entry.card.cardLast4,
-          label: entry.card.label,
-          corporateName: entry.account.corporateName,
-        });
-        const newCount = insertCardTransactions(cardId, entry.transactions);
-
-        // Remove rows for this same cycle that the bank no longer reports —
-        // e.g. an entry the scraper previously mis-included and has since
-        // learned to exclude (see the "not yet finalized" fix). Only cleans
-        // up billing_dates actually present in this synced batch; other
-        // cycles are untouched. A batch can span more than one billing_date
-        // (e.g. a foreign-currency charge debited on its own earlier date
-        // within the same cycle), so every distinct date gets its own pass.
-        const billingDates = [...new Set(entry.transactions.map(t => t.billingDate).filter(Boolean))];
-        const keepIds = entry.transactions.map(t => t.transactionID);
-        const staleRemoved = billingDates.reduce(
-          (sum, date) => sum + deleteStaleCardTransactions(cardId, date, keepIds),
-          0,
-        );
-
-        updateCardLastSync(cardId);
-        totalCards++;
-        totalNewTxns += newCount;
-
-        send('card-saved', {
-          cardLast4: entry.card.cardLast4,
-          account: entry.account.maskedNumber,
-          fetched: entry.transactions.length,
-          newSaved: newCount,
-          staleRemoved,
-        });
-      }
-    }
-
-    send('done', { bankId, totalCards, totalNewTxns });
+    const result = await runCardBankSync(bankId, {
+      actor: req.user?.email || 'sync-cards',
+      onEvent: send,
+      onSmsRequired,
+    });
+    send('done', result);
   } catch (err) {
     console.error('[credit-cards] sync error:', err);
     send('error', { message: err.message, stack: err.stack?.split('\n').slice(0, 5).join('\n') });
