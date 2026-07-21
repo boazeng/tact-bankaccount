@@ -426,4 +426,8 @@ export function recordPagePushed(cardId, billingDate, { bpyear, cash, bpnum }) {
   stmtRecordPush.run({ card_id: cardId, billing_date: billingDate, bpyear, cash: String(cash), bpnum: String(bpnum) });
 }
 
+export function getLastCardPushedAt() {
+  return db.prepare('SELECT MAX(pushed_at) AS at FROM card_priority_pushes').get().at;
+}
+
 export default db;

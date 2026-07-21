@@ -25,53 +25,35 @@
     <div class="page-head">
       <div class="eyebrow"><b></b>DASHBOARD</div>
       <h1>דשבורד <span class="acc">קבוצת TACT</span></h1>
-      <p class="sub">סקירה כללית של החשבונות וכרטיסי האשראי בקבוצה.</p>
-      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
+    </div>
+
+    <div class="action-row">
+      <div class="action-card sync">
         <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן בנקים</button>
+        <div class="action-meta" id="last-sync-meta"><span class="dot"></span><span>בודק…</span></div>
+      </div>
+      <div class="action-card push">
         <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט לפריוריטי</button>
+        <div class="action-meta" id="last-push-meta"><span class="dot"></span><span>בודק…</span></div>
       </div>
-    </div>
-
-    <div class="dashboard-kpis" id="dashboard-kpis">
-      <div class="kpi-card" data-kpi="balance" role="button" tabindex="0">
-        <div class="kpi-val">—</div>
-        <div class="kpi-lbl">יתרה כוללת</div>
-        <div class="kpi-hint">לחץ להרכב ⌄</div>
-      </div>
-      <div class="kpi-card">
-        <div class="kpi-val">—</div>
-        <div class="kpi-lbl">חשבונות פעילים</div>
-      </div>
-      <div class="kpi-card" data-kpi="cards" role="button" tabindex="0">
-        <div class="kpi-val">—</div>
-        <div class="kpi-lbl">כרטיסי אשראי</div>
-        <div class="kpi-hint">לחץ להרכב ⌄</div>
-      </div>
-      <div class="kpi-card" data-kpi="txns" role="button" tabindex="0">
-        <div class="kpi-val">—</div>
-        <div class="kpi-lbl">תנועות</div>
-        <div class="kpi-hint">לחץ להרכב ⌄</div>
-      </div>
-    </div>
-
-    <div class="kpi-breakdown" id="kpi-breakdown" style="display:none">
-      <div class="kpi-breakdown-title" id="kpi-breakdown-title"></div>
-      <div class="kpi-breakdown-list" id="kpi-breakdown-list"></div>
     </div>
 
     <div class="dashboard-tiles">
       <button type="button" class="dash-tile" id="tile-bank" data-target="bank">
         <span class="dash-tile-icon">🏦</span>
         <span class="dash-tile-title">תנועות בנק</span>
-        <span class="dash-tile-stat" id="tile-bank-stat">טוען…</span>
         <span class="dash-tile-arrow">כניסה ←</span>
       </button>
       <button type="button" class="dash-tile" id="tile-cards" data-target="cards">
         <span class="dash-tile-icon">💳</span>
-        <span class="dash-tile-title">כרטיסי אשראי</span>
-        <span class="dash-tile-stat" id="tile-cards-stat">טוען…</span>
+        <span class="dash-tile-title">תנועות אשראי</span>
         <span class="dash-tile-arrow">כניסה ←</span>
       </button>
+    </div>
+
+    <div class="balances-panel">
+      <div class="balances-title" id="balances-title">יתרות בבנקים</div>
+      <div class="balances-list" id="balances-list"></div>
     </div>
   </div>
 
@@ -145,130 +127,88 @@
     a.addEventListener('click', (e) => { e.preventDefault(); showView('dashboard'); });
   });
 
-  const BREAKDOWN_TITLES = {
-    balance: 'הרכב יתרה כוללת לפי חברה',
-    cards: 'הרכב כרטיסי אשראי לפי חברה',
-    txns: 'הרכב תנועות לפי חברה',
-  };
-  const BREAKDOWN_FMT = {
-    balance: (v) => fmtMoney(v),
-    cards: (v) => v + ' כרטיסים',
-    txns: (v) => v + ' תנועות',
-  };
-  let breakdownRows = { balance: [], cards: [], txns: [] };
-  let openBreakdown = null;
-
-  function renderBreakdown(kind) {
-    const panel = document.getElementById('kpi-breakdown');
-    const title = document.getElementById('kpi-breakdown-title');
-    const list = document.getElementById('kpi-breakdown-list');
-    const kpiCards = document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]');
-
-    if (openBreakdown === kind) {
-      panel.style.display = 'none';
-      kpiCards.forEach((c) => c.classList.remove('active'));
-      openBreakdown = null;
-      return;
-    }
-
-    openBreakdown = kind;
-    kpiCards.forEach((c) => c.classList.toggle('active', c.dataset.kpi === kind));
-
-    const rows = breakdownRows[kind] || [];
-    const max = Math.max(1, ...rows.map((r) => Math.abs(r.value)));
-    title.textContent = BREAKDOWN_TITLES[kind];
-    list.innerHTML = rows.length
-      ? rows.map((r) => `
-          <div class="kpi-bar-row">
-            <div class="kpi-bar-head">
-              <span class="kpi-bar-name">${escapeHtml(r.name)}</span>
-              <span class="kpi-bar-value">${BREAKDOWN_FMT[kind](r.value)}</span>
-            </div>
-            <div class="kpi-bar-track">
-              <div class="kpi-bar-fill" style="width:${Math.max(4, Math.abs(r.value) / max * 100)}%"></div>
-            </div>
-          </div>
-        `).join('')
-      : '<p class="kpi-bar-empty">אין נתונים</p>';
-    panel.style.display = 'block';
+  // Fixed hue order (validated categorical palette) — a company's color is
+  // derived from a hash of its name, not from its sort position, so it
+  // stays the same company-to-color mapping across reloads even as
+  // balances (and therefore row order) change day to day.
+  const SERIES_COLORS = ['#2a78d6', '#008300', '#e87ba4', '#eda100', '#1baf7a', '#eb6834', '#4a3aa7', '#e34948'];
+  function colorForKey(key) {
+    let h = 0;
+    for (let i = 0; i < key.length; i++) h = (h * 31 + key.charCodeAt(i)) >>> 0;
+    return SERIES_COLORS[h % SERIES_COLORS.length];
   }
 
-  document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]').forEach((card) => {
-    card.addEventListener('click', () => renderBreakdown(card.dataset.kpi));
-    card.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderBreakdown(card.dataset.kpi); }
-    });
-  });
+  function setMeta(elId, iso, prefix, neverText) {
+    const el = document.getElementById(elId);
+    const label = el.querySelector('span:last-child');
+    if (iso) {
+      el.classList.add('ok');
+      label.textContent = `${prefix}: ${fmtDateTime(iso)}`;
+    } else {
+      el.classList.remove('ok');
+      label.textContent = neverText;
+    }
+  }
 
   async function loadDashboardSummary() {
     try {
-      const [banksRes, cardsRes] = await Promise.all([fetch('/api/banks'), fetch('/api/credit-cards')]);
+      const [banksRes, pushRes] = await Promise.all([fetch('/api/banks'), fetch('/api/priority/last-push')]);
       const { banks } = await banksRes.json();
-      const { cards } = await cardsRes.json();
+      const { lastPushedAt } = await pushRes.json();
 
       // "Company" = branch: each bank branch in this group belongs to a
       // distinct company, so accounts are grouped by bank+branch (never by
       // branch number alone — branch numbers repeat across banks).
-      const bankNameById = new Map(banks.map((b) => [b.id, b.name_he]));
       const accountGroups = new Map();
-      let totalBalance = 0, activeAccounts = 0, totalTxns = 0;
+      let lastSync = null;
       for (const bank of banks) {
+        if (bank.last_sync_at && (!lastSync || bank.last_sync_at > lastSync)) lastSync = bank.last_sync_at;
         for (const a of bank.accounts) {
           if (!a.is_active) continue;
-          activeAccounts++;
           const bal = Number(a.last_balance) || 0;
-          const txns = Number(a.txn_count) || 0;
-          totalBalance += bal;
-          totalTxns += txns;
 
           const key = `${bank.id}::${a.branch_id || '?'}`;
           if (!accountGroups.has(key)) {
             const name = a.corporate_name || a.branch_name
               || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);
-            accountGroups.set(key, { name, balance: 0, txns: 0 });
+            accountGroups.set(key, { key, name, balance: 0 });
           }
-          const g = accountGroups.get(key);
-          g.balance += bal;
-          g.txns += txns;
+          accountGroups.get(key).balance += bal;
         }
       }
 
-      // Cards have no branch — the company is whatever corporate name the
-      // card itself carries (see priority_cashname / corporate_name on the
-      // credit-cards table).
-      const cardGroups = new Map();
-      for (const c of cards) {
-        const key = c.corporate_name || `bank:${c.bank_id}`;
-        if (!cardGroups.has(key)) {
-          const name = c.corporate_name || `${bankNameById.get(c.bank_id) || c.bank_id} (ללא שם חברה)`;
-          cardGroups.set(key, { name, cards: 0 });
-        }
-        cardGroups.get(key).cards++;
-      }
+      const rows = Array.from(accountGroups.values())
+        .filter((r) => r.balance)
+        .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance));
 
-      const toRows = (groups, field) => Array.from(groups.values())
-        .map((g) => ({ name: g.name, value: g[field] }))
-        .filter((r) => r.value)
-        .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
+      document.getElementById('balances-title').textContent = lastSync
+        ? `יתרות בבנקים ליום ${fmtDate(lastSync)}`
+        : 'יתרות בבנקים';
 
-      breakdownRows = {
-        balance: toRows(accountGroups, 'balance'),
-        txns: toRows(accountGroups, 'txns'),
-        cards: toRows(cardGroups, 'cards'),
-      };
+      const max = Math.max(1, ...rows.map((r) => Math.abs(r.balance)));
+      const list = document.getElementById('balances-list');
+      list.innerHTML = rows.length
+        ? rows.map((r) => {
+            const color = colorForKey(r.key);
+            return `
+              <div class="balance-bar-row">
+                <div class="balance-bar-head">
+                  <span class="balance-bar-name"><span class="dot" style="background:${color}"></span>${escapeHtml(r.name)}</span>
+                  <span class="balance-bar-value">${fmtMoney(r.balance)}</span>
+                </div>
+                <div class="balance-bar-track">
+                  <div class="balance-bar-fill" style="width:${Math.max(4, Math.abs(r.balance) / max * 100)}%; background:${color}"></div>
+                </div>
+              </div>
+            `;
+          }).join('')
+        : '<p class="balance-bar-empty">אין נתונים</p>';
 
-      const kpiVals = document.querySelectorAll('#dashboard-kpis .kpi-val');
-      kpiVals[0].textContent = fmtMoney(totalBalance);
-      kpiVals[1].textContent = String(activeAccounts);
-      kpiVals[2].textContent = String(cards.length);
-      kpiVals[3].textContent = String(totalTxns);
-
-      document.getElementById('tile-bank-stat').textContent =
-        `${activeAccounts} חשבונות פעילים · ${fmtMoney(totalBalance)}`;
-      document.getElementById('tile-cards-stat').textContent = `${cards.length} כרטיסים`;
+      setMeta('last-sync-meta', lastSync, 'סנכרון אחרון', 'טרם סונכרן');
+      setMeta('last-push-meta', lastPushedAt, 'קליטה אחרונה', 'טרם נקלט');
     } catch (e) {
-      document.getElementById('tile-bank-stat').textContent = 'שגיאה בטעינת נתונים';
-      document.getElementById('tile-cards-stat').textContent = 'שגיאה בטעינת נתונים';
+      document.getElementById('balances-list').innerHTML =
+        `<p class="balance-bar-empty">שגיאה בטעינת נתונים: ${escapeHtml(e.message)}</p>`;
     }
   }
 

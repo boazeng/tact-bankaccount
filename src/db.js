@@ -594,4 +594,8 @@ export function deleteTransaction(id) {
   return r.changes > 0;
 }
 
+export function getLastPushedAt() {
+  return db.prepare('SELECT MAX(pushed_to_priority_at) AS at FROM transactions').get().at;
+}
+
 export default db;

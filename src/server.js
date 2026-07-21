@@ -22,7 +22,9 @@ import {
   getEndOfDayBalance, getLastBalanceBefore, getFirstTransactionDate, getTransactionDatesInRange,
   getTransactionsForBalanceCheck,
   batchSetPriorityCashnames, markTransactionsPushed, deleteTransaction,
+  getLastPushedAt,
 } from './db.js';
+import { getLastCardPushedAt } from './credit-cards/db.js';
 import { checkBalanceContinuity } from './balance-check.js';
 
 const FLOW_BALANCE_MAPPING = [
@@ -110,6 +112,12 @@ app.get('/api/banks', (req, res) => {
     has_scraper: !!registryById[b.id],
   }));
   res.json({ banks: merged });
+});
+
+app.get('/api/priority/last-push', (req, res) => {
+  const candidates = [getLastPushedAt(), getLastCardPushedAt()].filter(Boolean);
+  const lastPushedAt = candidates.length ? candidates.sort().at(-1) : null;
+  res.json({ lastPushedAt });
 });
 
 app.get('/api/accounts/:id', (req, res) => {
