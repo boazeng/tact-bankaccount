@@ -2,6 +2,7 @@ import { scrapeLeumi, bankInfo as leumiInfo } from './leumi.js';
 import { scrapeDiscount, bankInfo as discountInfo } from './discount.js';
 import { scrapePoalim, bankInfo as poalimInfo } from './poalim.js';
 import { scrapeMizrachi, bankInfo as mizrachiInfo } from './mizrachi.js';
+import { scrapeBeinleumi, bankInfo as beinleumiInfo } from './beinleumi.js';
 
 export const bankRegistry = {
   leumi: {
@@ -38,6 +39,15 @@ export const bankRegistry = {
       userId: env.MIZRACHI_USER_ID,
       password: env.MIZRACHI_PASSWORD,
       loginUrl: env.MIZRACHI_URL,
+    }),
+  },
+  beinleumi: {
+    info: beinleumiInfo,
+    scrape: scrapeBeinleumi,
+    credentialsFromEnv: (env) => ({
+      userId: env.BEINLEUMI_USER_ID,
+      password: env.BEINLEUMI_PASSWORD,
+      loginUrl: env.BEINLEUMI_URL,
     }),
   },
 };
