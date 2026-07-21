@@ -334,12 +334,13 @@ header {
 .expand-table td { padding: 10px 14px; }
 .expand-table .et-name { font-weight: 600; color: var(--color-text); display: flex; align-items: center; gap: 8px; }
 .corp-name-input {
-  flex: 1; min-width: 0; border: 1px solid transparent; background: transparent;
+  flex: 1; min-width: 0; border: 1px dashed var(--color-border); background: var(--color-bg);
   font: inherit; font-weight: 600; color: var(--color-text);
   padding: 4px 6px; border-radius: var(--radius-sm); transition: all 0.15s ease;
+  cursor: text;
 }
-.corp-name-input:hover { border-color: var(--color-border); }
-.corp-name-input:focus { border-color: var(--color-primary); background: var(--color-bg-white); outline: none; }
+.corp-name-input:hover { border-color: var(--color-primary-light); background: var(--color-primary-soft); }
+.corp-name-input:focus { border-style: solid; border-color: var(--color-primary); background: var(--color-bg-white); outline: none; }
 .corp-name-input::placeholder { color: var(--color-text-light); font-weight: 400; }
 .corp-name-status { font-size: 0.8rem; white-space: nowrap; }
 .expand-table .et-num { font-family: var(--font-family-en); color: var(--color-text-light); font-size: 0.82rem; }
