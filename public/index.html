@@ -26,13 +26,37 @@
       <div class="eyebrow"><b></b>DASHBOARD</div>
       <h1>דשבורד <span class="acc">קבוצת TACT</span></h1>
       <p class="sub">סקירה כללית של החשבונות וכרטיסי האשראי בקבוצה.</p>
+      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
+        <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן בנקים</button>
+        <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט לפריוריטי</button>
+      </div>
     </div>
 
     <div class="dashboard-kpis" id="dashboard-kpis">
-      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">יתרה כוללת</div></div>
-      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">חשבונות פעילים</div></div>
-      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">כרטיסי אשראי</div></div>
-      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">עודכן לאחרונה</div></div>
+      <div class="kpi-card" data-kpi="balance" role="button" tabindex="0">
+        <div class="kpi-val">—</div>
+        <div class="kpi-lbl">יתרה כוללת</div>
+        <div class="kpi-hint">לחץ להרכב ⌄</div>
+      </div>
+      <div class="kpi-card">
+        <div class="kpi-val">—</div>
+        <div class="kpi-lbl">חשבונות פעילים</div>
+      </div>
+      <div class="kpi-card" data-kpi="cards" role="button" tabindex="0">
+        <div class="kpi-val">—</div>
+        <div class="kpi-lbl">כרטיסי אשראי</div>
+        <div class="kpi-hint">לחץ להרכב ⌄</div>
+      </div>
+      <div class="kpi-card" data-kpi="txns" role="button" tabindex="0">
+        <div class="kpi-val">—</div>
+        <div class="kpi-lbl">תנועות</div>
+        <div class="kpi-hint">לחץ להרכב ⌄</div>
+      </div>
+    </div>
+
+    <div class="kpi-breakdown" id="kpi-breakdown" style="display:none">
+      <div class="kpi-breakdown-title" id="kpi-breakdown-title"></div>
+      <div class="kpi-breakdown-list" id="kpi-breakdown-list"></div>
     </div>
 
     <div class="dashboard-tiles">
@@ -57,11 +81,7 @@
     <div class="page-head">
       <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
       <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
-      <p class="sub">סנכרון תנועות מהבנקים אל בסיס הנתונים המקומי. כל סנכרון מוסיף רק תנועות חדשות — אין כפילויות.</p>
-      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
-        <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן כל החשבונות</button>
-        <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט כל החשבונות לפריוריטי</button>
-      </div>
+      <p class="sub">פירוט חשבונות ותנועות מהבנקים. לסנכרון ולקליטה לפריוריטי — בדשבורד הראשי.</p>
     </div>
 
     <div id="bank-summary" class="bank-summary"></div>
@@ -77,13 +97,7 @@
     <div class="page-head">
       <div class="eyebrow"><b></b>CREDIT CARDS</div>
       <h1>כרטיסי <span class="acc">אשראי</span></h1>
-      <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים, נקלט לפריוריטי כדף בנק חודשי לכל כרטיס.</p>
-      <div style="display:flex; gap:10px; margin-top:20px; flex-wrap:wrap;">
-        <button class="btn btn-pri" id="sync-discount-btn">↓ סנכרן כרטיסי דיסקונט</button>
-        <button class="btn btn-pri" id="sync-poalim-btn">↓ סנכרן כרטיסי פועלים</button>
-        <button class="btn btn-pri" id="sync-leumi-btn">↓ סנכרן כרטיסי לאומי</button>
-        <button class="btn btn-push" id="push-all-priority-btn">↑ קלוט את כל הכרטיסים לפריוריטי</button>
-      </div>
+      <p class="sub">פירוט חיובי כרטיסי אשראי מהבנקים, נקלט לפריוריטי כדף בנק חודשי לכל כרטיס. לסנכרון ולקליטה לפריוריטי — בדשבורד הראשי.</p>
     </div>
 
     <div id="cards-container">
@@ -131,27 +145,85 @@
     a.addEventListener('click', (e) => { e.preventDefault(); showView('dashboard'); });
   });
 
+  const BREAKDOWN_TITLES = {
+    balance: 'הרכב יתרה כוללת לפי בנק',
+    cards: 'הרכב כרטיסי אשראי לפי בנק',
+    txns: 'הרכב תנועות לפי בנק',
+  };
+  let breakdownData = null;
+  let openBreakdown = null;
+
+  function renderBreakdown(kind) {
+    const panel = document.getElementById('kpi-breakdown');
+    const title = document.getElementById('kpi-breakdown-title');
+    const list = document.getElementById('kpi-breakdown-list');
+    const cards = document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]');
+
+    if (openBreakdown === kind) {
+      panel.style.display = 'none';
+      cards.forEach((c) => c.classList.remove('active'));
+      openBreakdown = null;
+      return;
+    }
+
+    openBreakdown = kind;
+    cards.forEach((c) => c.classList.toggle('active', c.dataset.kpi === kind));
+
+    const rows = (breakdownData || []).filter((r) => r[kind] > 0);
+    title.textContent = BREAKDOWN_TITLES[kind];
+    list.innerHTML = rows.length
+      ? rows.map((r) => `
+          <div class="kpi-breakdown-row">
+            <span>${escapeHtml(r.name)}</span>
+            <span>${kind === 'balance' ? fmtMoney(r.balance) : kind === 'cards' ? r.cards + ' כרטיסים' : r.txns + ' תנועות'}</span>
+          </div>
+        `).join('')
+      : '<div class="kpi-breakdown-row"><span>אין נתונים</span></div>';
+    panel.style.display = 'block';
+  }
+
+  document.querySelectorAll('#dashboard-kpis .kpi-card[data-kpi]').forEach((card) => {
+    card.addEventListener('click', () => renderBreakdown(card.dataset.kpi));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); renderBreakdown(card.dataset.kpi); }
+    });
+  });
+
   async function loadDashboardSummary() {
     try {
       const [banksRes, cardsRes] = await Promise.all([fetch('/api/banks'), fetch('/api/credit-cards')]);
       const { banks } = await banksRes.json();
       const { cards } = await cardsRes.json();
 
-      let totalBalance = 0, activeAccounts = 0, lastSync = null;
+      const perBank = new Map();
+      const bankEntry = (id, name) => {
+        if (!perBank.has(id)) perBank.set(id, { name: name || id, balance: 0, accounts: 0, txns: 0, cards: 0 });
+        return perBank.get(id);
+      };
+
+      let totalBalance = 0, activeAccounts = 0, totalTxns = 0;
       for (const bank of banks) {
+        const entry = bankEntry(bank.id, bank.name_he);
         for (const a of bank.accounts) {
           if (!a.is_active) continue;
           activeAccounts++;
-          totalBalance += Number(a.last_balance) || 0;
-          if (a.last_sync_at && (!lastSync || a.last_sync_at > lastSync)) lastSync = a.last_sync_at;
+          const bal = Number(a.last_balance) || 0;
+          const txns = Number(a.txn_count) || 0;
+          totalBalance += bal;
+          totalTxns += txns;
+          entry.balance += bal;
+          entry.accounts++;
+          entry.txns += txns;
         }
       }
+      for (const c of cards) bankEntry(c.bank_id).cards++;
+      breakdownData = Array.from(perBank.values());
 
       const kpiVals = document.querySelectorAll('#dashboard-kpis .kpi-val');
       kpiVals[0].textContent = fmtMoney(totalBalance);
       kpiVals[1].textContent = String(activeAccounts);
       kpiVals[2].textContent = String(cards.length);
-      kpiVals[3].textContent = lastSync ? fmtDateTime(lastSync) : 'מעולם לא';
+      kpiVals[3].textContent = String(totalTxns);
 
       document.getElementById('tile-bank-stat').textContent =
         `${activeAccounts} חשבונות פעילים · ${fmtMoney(totalBalance)}`;

@@ -479,10 +479,10 @@ async function syncCards(bankId) {
   }
 }
 
-document.getElementById('sync-discount-btn').addEventListener('click', () => syncCards('discount'));
-document.getElementById('sync-poalim-btn').addEventListener('click', () => syncCards('poalim'));
-document.getElementById('sync-leumi-btn').addEventListener('click', () => syncCards('leumi'));
-document.getElementById('push-all-priority-btn').addEventListener('click', pushAllCardsToPriority);
+document.getElementById('sync-discount-btn')?.addEventListener('click', () => syncCards('discount'));
+document.getElementById('sync-poalim-btn')?.addEventListener('click', () => syncCards('poalim'));
+document.getElementById('sync-leumi-btn')?.addEventListener('click', () => syncCards('leumi'));
+document.getElementById('push-all-priority-btn')?.addEventListener('click', pushAllCardsToPriority);
 
 renderUserChip();
 loadCards();
