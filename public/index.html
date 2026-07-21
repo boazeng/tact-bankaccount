@@ -21,12 +21,39 @@
 </header>
 
 <main class="wrap">
-  <div class="view-tabs">
-    <button type="button" class="tab-btn active" id="tab-btn-bank">תנועות בנק</button>
-    <button type="button" class="tab-btn" id="tab-btn-cards">כרטיסי אשראי</button>
+  <div id="view-dashboard">
+    <div class="page-head">
+      <div class="eyebrow"><b></b>DASHBOARD</div>
+      <h1>דשבורד <span class="acc">קבוצת TACT</span></h1>
+      <p class="sub">סקירה כללית של החשבונות וכרטיסי האשראי בקבוצה.</p>
+    </div>
+
+    <div class="dashboard-kpis" id="dashboard-kpis">
+      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">יתרה כוללת</div></div>
+      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">חשבונות פעילים</div></div>
+      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">כרטיסי אשראי</div></div>
+      <div class="kpi-card"><div class="kpi-val">—</div><div class="kpi-lbl">עודכן לאחרונה</div></div>
+    </div>
+
+    <div class="dashboard-tiles">
+      <button type="button" class="dash-tile" id="tile-bank" data-target="bank">
+        <span class="dash-tile-icon">🏦</span>
+        <span class="dash-tile-title">תנועות בנק</span>
+        <span class="dash-tile-stat" id="tile-bank-stat">טוען…</span>
+        <span class="dash-tile-arrow">כניסה ←</span>
+      </button>
+      <button type="button" class="dash-tile" id="tile-cards" data-target="cards">
+        <span class="dash-tile-icon">💳</span>
+        <span class="dash-tile-title">כרטיסי אשראי</span>
+        <span class="dash-tile-stat" id="tile-cards-stat">טוען…</span>
+        <span class="dash-tile-arrow">כניסה ←</span>
+      </button>
+    </div>
   </div>
 
-  <div id="view-bank">
+  <div id="view-bank" style="display:none">
+    <a href="#" class="back-link" data-back>← חזרה לדשבורד</a>
+
     <div class="page-head">
       <div class="eyebrow"><b></b>BANK ACCOUNTS</div>
       <h1>חשבונות <span class="acc">קבוצת TACT</span></h1>
@@ -45,6 +72,8 @@
   </div>
 
   <div id="view-cards" style="display:none">
+    <a href="#" class="back-link" data-back>← חזרה לדשבורד</a>
+
     <div class="page-head">
       <div class="eyebrow"><b></b>CREDIT CARDS</div>
       <h1>כרטיסי <span class="acc">אשראי</span></h1>
@@ -85,21 +114,55 @@
 <script type="module" src="/credit-cards.js"></script>
 <script>
 (function () {
-  const tabBtnBank = document.getElementById('tab-btn-bank');
-  const tabBtnCards = document.getElementById('tab-btn-cards');
-  const viewBank = document.getElementById('view-bank');
-  const viewCards = document.getElementById('view-cards');
+  const views = {
+    dashboard: document.getElementById('view-dashboard'),
+    bank: document.getElementById('view-bank'),
+    cards: document.getElementById('view-cards'),
+  };
 
-  function showTab(tab) {
-    const isBank = tab === 'bank';
-    viewBank.style.display = isBank ? '' : 'none';
-    viewCards.style.display = isBank ? 'none' : '';
-    tabBtnBank.classList.toggle('active', isBank);
-    tabBtnCards.classList.toggle('active', !isBank);
+  function showView(name) {
+    for (const key of Object.keys(views)) views[key].style.display = key === name ? '' : 'none';
+    window.scrollTo({ top: 0 });
   }
 
-  tabBtnBank.addEventListener('click', () => showTab('bank'));
-  tabBtnCards.addEventListener('click', () => showTab('cards'));
+  document.getElementById('tile-bank').addEventListener('click', () => showView('bank'));
+  document.getElementById('tile-cards').addEventListener('click', () => showView('cards'));
+  document.querySelectorAll('[data-back]').forEach((a) => {
+    a.addEventListener('click', (e) => { e.preventDefault(); showView('dashboard'); });
+  });
+
+  async function loadDashboardSummary() {
+    try {
+      const [banksRes, cardsRes] = await Promise.all([fetch('/api/banks'), fetch('/api/credit-cards')]);
+      const { banks } = await banksRes.json();
+      const { cards } = await cardsRes.json();
+
+      let totalBalance = 0, activeAccounts = 0, lastSync = null;
+      for (const bank of banks) {
+        for (const a of bank.accounts) {
+          if (!a.is_active) continue;
+          activeAccounts++;
+          totalBalance += Number(a.last_balance) || 0;
+          if (a.last_sync_at && (!lastSync || a.last_sync_at > lastSync)) lastSync = a.last_sync_at;
+        }
+      }
+
+      const kpiVals = document.querySelectorAll('#dashboard-kpis .kpi-val');
+      kpiVals[0].textContent = fmtMoney(totalBalance);
+      kpiVals[1].textContent = String(activeAccounts);
+      kpiVals[2].textContent = String(cards.length);
+      kpiVals[3].textContent = lastSync ? fmtDateTime(lastSync) : 'מעולם לא';
+
+      document.getElementById('tile-bank-stat').textContent =
+        `${activeAccounts} חשבונות פעילים · ${fmtMoney(totalBalance)}`;
+      document.getElementById('tile-cards-stat').textContent = `${cards.length} כרטיסים`;
+    } catch (e) {
+      document.getElementById('tile-bank-stat').textContent = 'שגיאה בטעינת נתונים';
+      document.getElementById('tile-cards-stat').textContent = 'שגיאה בטעינת נתונים';
+    }
+  }
+
+  loadDashboardSummary();
 })();
 </script>
 </body>
