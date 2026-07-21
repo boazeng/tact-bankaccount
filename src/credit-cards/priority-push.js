@@ -284,9 +284,15 @@ export async function checkCardPageStatus(cashName, page) {
     // this cashname may already have one under a different day that month
     // (e.g. entered manually) that already carries this page's exact
     // content. Diff against every line in the month (not just "a page
-    // exists this month") so a genuinely different real billing_date in the
-    // same cycle/month — whose lines aren't found anywhere yet — is reported
-    // as needing its own page rather than wrongly marked as covered.
+    // exists this month") — but text matching is fragile (exact string
+    // compare), so only the extremes are safe to report with confidence:
+    // 'exists-other-date' (everything matches — genuine duplicate) or
+    // 'missing' (nothing matches anywhere — a genuinely separate date, safe
+    // to create). A PARTIAL match is its own distinct 'ambiguous-month-match'
+    // status, never folded into ordinary 'partial' (that label is reserved
+    // for a page that genuinely exists at this exact date with some lines
+    // still missing) — confirmed live that treating this case the same as
+    // an ordinary top-up created a real duplicate page in Priority.
     const monthLines = await fetchExistingCardLinesForMonth(cashName, page.curdate.slice(0, 7));
     const lineMatches = matchLinesAgainstExisting(page.lines, monthLines);
     const missingCount = lineMatches.filter(l => !l.matched).length;
@@ -294,13 +300,11 @@ export async function checkCardPageStatus(cashName, page) {
       const monthMatch = await findExistingCardPageInMonth(cashName, page.curdate);
       return { status: 'exists-other-date', missingCount: 0, existingPageDate: monthMatch?.CURDATE?.slice(0, 10) || null, lineMatches };
     }
+    if (missingCount < page.lines.length) {
+      return { status: 'ambiguous-month-match', missingCount, lineMatches };
+    }
     const otherCashnamesOnDate = [...new Set(rows.map(r => r.CASHNAME).filter(Boolean))];
-    return {
-      status: missingCount === page.lines.length ? 'missing' : 'partial',
-      missingCount,
-      lineMatches,
-      otherCashnamesOnDate,
-    };
+    return { status: 'missing', missingCount, lineMatches, otherCashnamesOnDate };
   }
   const existingLines = await fetchExistingCardLines(cashName, page.curdate);
   const lineMatches = matchLinesAgainstExisting(page.lines, existingLines);
@@ -341,22 +345,35 @@ export async function pushCardPageToPriority(cashName, page) {
     }
   } else {
     // No exact-day match — before creating a new page, check whether THIS
-    // page's actual content (every line, not just "a page exists") is
-    // already sitting in Priority somewhere else in the month. Confirmed
-    // live: a manual page under CURDATE=2026-06-20 for a cycle we computed
-    // as 2026-06-21 was invisible to the exact-day check, so a blanket
-    // "any page exists this month → skip" guard used to run here. That
-    // blanket version broke the moment one card cycle legitimately splits
-    // into two real bank-debit dates in the same month (see the billing_date
-    // split fix) — it silently refused to ever create the second date's
-    // page, because the first date's page already "existed that month".
-    // Diffing against every line in the month instead tells the two cases
-    // apart: if everything's already there, it's a genuine duplicate; if
-    // this date's lines aren't found anywhere, it's a distinct page that
-    // still needs to be created.
+    // page's actual content is already sitting in Priority somewhere else
+    // in the month. Confirmed live: a manual page under CURDATE=2026-06-20
+    // for a cycle we computed as 2026-06-21 was invisible to the exact-day
+    // check, so a blanket "any page exists this month → skip" guard used to
+    // run here. That blanket version broke the moment one card cycle
+    // legitimately splits into two real bank-debit dates in the same month
+    // (see the billing_date split fix) — it silently refused to ever create
+    // the second date's page.
+    //
+    // Diffing against every line in the month tells the two cases apart —
+    // but ONLY at the extremes. Text matching (exact string compare after
+    // normalizeText) is fragile: a manually-entered page whose wording
+    // differs even slightly from ours reads as "some lines missing" even
+    // though every one of them is really already there. Confirmed live:
+    // this exact ambiguity created a real duplicate page in Priority for
+    // more than one cashname the moment it got treated as "create a new
+    // page and push whatever looks missing". So:
+    //   - zero lines match anywhere in the month → high-confidence this is
+    //     a genuinely separate cycle date, safe to create its own page.
+    //   - every line matches somewhere in the month → genuine duplicate,
+    //     skip entirely.
+    //   - some but not all match → cannot safely tell "already there under
+    //     different wording" from "genuinely partial" apart by text alone.
+    //     Never guess: push nothing, surface for manual review instead.
     const monthLines = await fetchExistingCardLinesForMonth(cashName, page.curdate.slice(0, 7));
-    linesToPush = diffMissingLines(page.lines, monthLines);
-    if (linesToPush.length === 0) {
+    const lineMatches = matchLinesAgainstExisting(page.lines, monthLines);
+    const missingCount = lineMatches.filter(l => !l.matched).length;
+
+    if (missingCount === 0) {
       const monthMatch = await findExistingCardPageInMonth(cashName, page.curdate);
       return {
         bpyear: monthMatch?.BPYEAR, cash: monthMatch?.CASH, bpnum: monthMatch?.BPNUM,
@@ -364,6 +381,16 @@ export async function pushCardPageToPriority(cashName, page) {
         skippedReason: `כל השורות כבר קיימות בפריוריטי החודש (${monthMatch?.CURDATE?.slice(0, 10) || '?'}) — לא נוצר דף כפול`,
       };
     }
+
+    if (missingCount < page.lines.length) {
+      return {
+        bpyear: null, cash: null, bpnum: null,
+        pushed: [], failed: [], alreadyExisted: false, hadExistingPage: false, ambiguous: true,
+        skippedReason: `${missingCount} מתוך ${page.lines.length} שורות לא נמצאו בדיוק בפריוריטי החודש — ייתכן שהדף כבר קיים בניסוח מעט שונה. לא נדחף/נוצר דף, נדרשת בדיקה ידנית.`,
+      };
+    }
+
+    linesToPush = page.lines;
     bankPage = await createCardBankPage(cashName, page.curdate);
   }
 

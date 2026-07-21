@@ -106,6 +106,7 @@ const PAGE_STATUS_BADGE = {
   partial: (page) => `<span style="color:#c77700; font-weight:700;">⚠ נקלט חלקית — ${page.missingCount} שורות חסרות</span>`,
   missing: '<span style="color:var(--color-text-light);">טרם נקלט</span>',
   'exists-other-date': (page) => `<span style="color:var(--color-pos); font-weight:700;">✓ קיים דף אחר החודש (${escapeHtml(page.existingPageDate || '?')}) — לא יידחף דף כפול</span>`,
+  'ambiguous-month-match': (page) => `<span style="color:var(--color-neg); font-weight:700;">⚠ ${page.missingCount} שורות לא נמצאו בדיוק בפריוריטי החודש — ייתכן שהדף כבר קיים בניסוח שונה. לא נקלט אוטומטית, נדרשת בדיקה ידנית</span>`,
   unknown: (page) => `<span style="color:var(--color-neg);">שגיאה בבדיקת סטטוס${page.statusError ? ': ' + escapeHtml(page.statusError) : ''}</span>`,
 };
 

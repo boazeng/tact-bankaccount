@@ -129,7 +129,12 @@ async function pushCardToPriority(card) {
     }
     try {
       const result = await pushCardPageToPriority(card.priority_cashname, page);
-      const ok = result.failed.length === 0;
+      // ambiguous (text-matching couldn't safely tell "already there under
+      // different wording" from "genuinely partial" apart — see
+      // pushCardPageToPriority) pushes nothing and fails nothing, but must
+      // never be recorded as success — that's exactly the state that let a
+      // real duplicate page slip through before this check existed.
+      const ok = result.failed.length === 0 && !result.ambiguous;
       // Only record success once every line is confirmed pushed — recording
       // on a partial failure is exactly the bug that made the UI claim a
       // page was captured when it wasn't.
