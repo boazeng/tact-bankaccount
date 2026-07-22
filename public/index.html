@@ -46,12 +46,12 @@
 
     <div class="dashboard-tiles">
       <button type="button" class="dash-tile" id="tile-bank" data-target="bank">
-        <span class="dash-tile-icon">🏛️</span>
+        <span class="dash-tile-icon bank">🏛️</span>
         <span class="dash-tile-title">תנועות בנק</span>
         <span class="dash-tile-arrow">כניסה ←</span>
       </button>
       <button type="button" class="dash-tile" id="tile-cards" data-target="cards">
-        <span class="dash-tile-icon">💳</span>
+        <span class="dash-tile-icon cards">💳</span>
         <span class="dash-tile-title">תנועות אשראי</span>
         <span class="dash-tile-arrow">כניסה ←</span>
       </button>
@@ -147,6 +147,12 @@
     return SERIES_COLORS[h % SERIES_COLORS.length];
   }
 
+  function initials(name) {
+    const words = name.trim().split(/\s+/).filter(Boolean);
+    if (!words.length) return '·';
+    return words.length === 1 ? words[0].slice(0, 2) : words[0][0] + words[1][0];
+  }
+
   function setMeta(elId, iso, prefix, neverText) {
     const el = document.getElementById(elId);
     const label = el.querySelector('span:last-child');
@@ -219,7 +225,7 @@
             return `
               <div class="company-group" style="--company-color:${color}">
                 <div class="company-head">
-                  <span class="company-name"><span class="dot" style="background:${color}"></span>${escapeHtml(c.name)}</span>
+                  <span class="company-name"><span class="avatar" style="background:${color}">${escapeHtml(initials(c.name))}</span>${escapeHtml(c.name)}</span>
                   <span class="company-total ${signCls(c.total)}">${fmtMoney(c.total)}</span>
                 </div>
                 <div class="company-share"><i style="width:${share}%;background:${color}"></i></div>
