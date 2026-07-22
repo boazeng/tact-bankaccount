@@ -258,7 +258,7 @@ const stmtUpsertAccount = db.prepare(`
   VALUES (@bank_id, @account_index, @masked_number, @corporate_name, @iban, @last_balance, @branch_id, @branch_name)
   ON CONFLICT(bank_id, masked_number) DO UPDATE SET
     account_index  = excluded.account_index,
-    corporate_name = excluded.corporate_name,
+    corporate_name = COALESCE(corporate_name, excluded.corporate_name),
     iban           = COALESCE(excluded.iban, iban),
     last_balance   = excluded.last_balance,
     branch_id      = COALESCE(excluded.branch_id, branch_id),
