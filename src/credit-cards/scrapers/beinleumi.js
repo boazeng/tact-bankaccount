@@ -94,32 +94,62 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
 // top-nav dropdown and looking for the freshly-revealed sub-item is what
 // actually matters — a diff with no elapsed time between the "before" and
 // "after" DOM snapshots can never find anything "fresh".
+// A plain element.click() found a matching node and reported success both
+// times, yet page.url() never moved off #/accountSummary at all (confirmed
+// live) — so click() alone isn't reliably triggering Angular's handler here.
+// Dispatch a fuller, more "real" event sequence, and fail fast with a clear
+// diagnostic if a click had no observable effect instead of silently
+// carrying on to the next step.
+async function realClick(page, el) {
+  await el.evaluate((node) => {
+    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
+      node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+    }
+  });
+}
+
+async function findLeafByText(page, text) {
+  return page.evaluateHandle((text) =>
+    Array.from(document.querySelectorAll('*'))
+      .find(e => e.children.length === 0 && (e.textContent || '').trim() === text),
+  text);
+}
+
 async function navigateToCardsSummary(page, onProgress) {
   onProgress({ step: 'navigate', message: 'עובר למסך כרטיסי אשראי…' });
+  const urlBeforeNav = page.url();
 
-  const openedNav = await page.evaluate(() => {
-    const el = Array.from(document.querySelectorAll('*'))
-      .find(e => e.children.length === 0 && /^כרטיסי אשראי$/.test((e.textContent || '').trim()));
-    if (el) { el.click(); return true; }
-    return false;
-  });
-  if (!openedNav) throw new Error('scrapeBeinleumiCards: "כרטיסי אשראי" nav item not found');
+  const navHandle = await findLeafByText(page, 'כרטיסי אשראי');
+  const navEl = navHandle.asElement();
+  if (!navEl) throw new Error('scrapeBeinleumiCards: "כרטיסי אשראי" nav item not found');
+  await realClick(page, navEl);
+
+  const navChanged = await page.waitForFunction(
+    (before) => location.href !== before,
+    { timeout: 8_000 },
+    urlBeforeNav,
+  ).then(() => true).catch(() => false);
+  if (!navChanged) {
+    throw new Error(`scrapeBeinleumiCards: לחיצה על "כרטיסי אשראי" לא שינתה את הדף (עדיין ${page.url().slice(0, 90)})`);
+  }
+  onProgress({ step: 'cards-menu-opened', message: 'תפריט כרטיסי אשראי נפתח, מחפש פירוט חיובים…' });
   await sleep(2_000);
 
-  const beforeHtml = await page.evaluate(() =>
-    Array.from(document.querySelectorAll('*'))
-      .filter(e => e.children.length === 0 && /^פירוט חיובים$/.test((e.textContent || '').trim()))
-      .map(e => e.outerHTML));
+  const urlBeforeDetail = page.url();
+  const detailHandle = await findLeafByText(page, 'פירוט חיובים');
+  const detailEl = detailHandle.asElement();
+  if (!detailEl) throw new Error('scrapeBeinleumiCards: "פירוט חיובים" nav item not found');
+  await realClick(page, detailEl);
 
-  const clicked = await page.evaluate((beforeHtml) => {
-    const els = Array.from(document.querySelectorAll('*'))
-      .filter(e => e.children.length === 0 && /^פירוט חיובים$/.test((e.textContent || '').trim()));
-    const fresh = els.find(e => !beforeHtml.includes(e.outerHTML));
-    const target = fresh || els[0];
-    if (target) { target.click(); return true; }
-    return false;
-  }, beforeHtml);
-  if (!clicked) throw new Error('scrapeBeinleumiCards: "פירוט חיובים" nav item not found');
+  // This step may not always change location.href (it can load straight
+  // into the wps/myportal iframe without touching the shell's own URL), so
+  // don't fail fast here — just give it time to settle before the caller
+  // polls for the portlet frame itself.
+  await page.waitForFunction(
+    (before) => location.href !== before,
+    { timeout: 5_000 },
+    urlBeforeDetail,
+  ).catch(() => {});
   await sleep(2_000);
 }
 
