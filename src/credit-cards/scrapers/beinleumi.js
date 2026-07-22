@@ -78,32 +78,36 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
   await sleep(6_000);
 }
 
-// Same "before/after" trick as the checking-account scraper's nav: a quick-
-// links shortcut with the same text exists before the top-nav dropdown is
-// opened, so diff to find the freshly-revealed real nav item.
-async function clickFreshMatch(page, text) {
-  const before = await page.evaluate((text) =>
-    Array.from(document.querySelectorAll('*'))
-      .filter(e => e.children.length === 0 && (e.textContent || '').trim() === text)
-      .map(e => e.outerHTML), text);
-
-  return page.evaluate((text, before) => {
-    const els = Array.from(document.querySelectorAll('*'))
-      .filter(e => e.children.length === 0 && (e.textContent || '').trim() === text);
-    const fresh = els.find(e => !before.includes(e.outerHTML));
-    const target = fresh || els[els.length - 1];
-    if (target) { target.click(); return true; }
-    return false;
-  }, text, before);
-}
-
+// Mirrors src/scrapers/beinleumi.js's navigateToTransactions exactly: a
+// real sleep (not a same-tick evaluate round-trip) between opening the
+// top-nav dropdown and looking for the freshly-revealed sub-item is what
+// actually matters — a diff with no elapsed time between the "before" and
+// "after" DOM snapshots can never find anything "fresh".
 async function navigateToCardsSummary(page, onProgress) {
   onProgress({ step: 'navigate', message: 'עובר למסך כרטיסי אשראי…' });
-  const openedNav = await clickFreshMatch(page, 'כרטיסי אשראי');
-  if (!openedNav) throw new Error('scrapeBeinleumiCards: "כרטיסי אשראי" nav item not found');
-  await sleep(1_500);
 
-  const clicked = await clickFreshMatch(page, 'פירוט חיובים');
+  const openedNav = await page.evaluate(() => {
+    const el = Array.from(document.querySelectorAll('*'))
+      .find(e => e.children.length === 0 && /^כרטיסי אשראי$/.test((e.textContent || '').trim()));
+    if (el) { el.click(); return true; }
+    return false;
+  });
+  if (!openedNav) throw new Error('scrapeBeinleumiCards: "כרטיסי אשראי" nav item not found');
+  await sleep(2_000);
+
+  const beforeHtml = await page.evaluate(() =>
+    Array.from(document.querySelectorAll('*'))
+      .filter(e => e.children.length === 0 && /^פירוט חיובים$/.test((e.textContent || '').trim()))
+      .map(e => e.outerHTML));
+
+  const clicked = await page.evaluate((beforeHtml) => {
+    const els = Array.from(document.querySelectorAll('*'))
+      .filter(e => e.children.length === 0 && /^פירוט חיובים$/.test((e.textContent || '').trim()));
+    const fresh = els.find(e => !beforeHtml.includes(e.outerHTML));
+    const target = fresh || els[0];
+    if (target) { target.click(); return true; }
+    return false;
+  }, beforeHtml);
   if (!clicked) throw new Error('scrapeBeinleumiCards: "פירוט חיובים" nav item not found');
   await sleep(8_000);
 }
