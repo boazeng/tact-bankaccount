@@ -64,6 +64,13 @@
       </div>
       <div class="balances-list" id="balances-list"></div>
     </div>
+
+    <div class="balances-panel" id="facilities-panel" style="display:none">
+      <div class="balances-head">
+        <div class="balances-title">פקדונות, הלוואות וערבויות</div>
+      </div>
+      <div id="facilities-body"></div>
+    </div>
   </div>
 
   <div id="view-bank" style="display:none">
@@ -237,7 +244,65 @@
     }
   }
 
+  const BANK_NAMES = { leumi: 'בנק לאומי', poalim: 'בנק הפועלים', mizrachi: 'בנק מזרחי-טפחות', discount: 'בנק דיסקונט', beinleumi: 'הבנק הבינלאומי' };
+
+  async function loadFacilities() {
+    const panel = document.getElementById('facilities-panel');
+    try {
+      const res = await fetch('/api/facilities');
+      const { deposits, loans, guarantees } = await res.json();
+
+      const sections = [
+        { key: 'deposits', title: 'פקדונות', items: deposits, sign: 'pos' },
+        { key: 'loans', title: 'הלוואות', items: loans, sign: 'neg' },
+        { key: 'guarantees', title: 'ערבויות', items: guarantees, sign: 'neg' },
+      ].filter(s => s.items.length);
+
+      if (!sections.length) { panel.style.display = 'none'; return; }
+      panel.style.display = '';
+
+      document.getElementById('facilities-body').innerHTML = sections.map(({ key, title, items, sign }) => {
+        const total = items.reduce((s, f) => s + (Number(f.current_amount) || 0), 0);
+        const rows = items
+          .slice()
+          .sort((a, b) => (Number(b.current_amount) || 0) - (Number(a.current_amount) || 0))
+          .map((f) => {
+            const bankName = BANK_NAMES[f.bank_id] || f.bank_id;
+            const subParts = [bankName, f.corporate_name].filter(Boolean);
+            if (key === 'guarantees' && f.counterparty) subParts.push(`לטובת ${f.counterparty}`);
+            if (f.end_date) subParts.push(`עד ${fmtDate(f.end_date)}`);
+            if (key === 'loans' && f.next_payment_date) {
+              subParts.push(`תשלום הבא ${fmtDate(f.next_payment_date)}${f.next_payment_amount ? ' · ' + fmtMoney(f.next_payment_amount) : ''}`);
+            }
+            return `
+              <div class="facility-row">
+                <div class="fr-main">
+                  <span class="fr-label">${escapeHtml(f.label || '—')}</span>
+                  <span class="fr-sub">${escapeHtml(subParts.join(' · '))}</span>
+                </div>
+                <span class="fr-amt ${sign}">${fmtMoney(f.current_amount)}</span>
+              </div>
+            `;
+          }).join('');
+        return `
+          <div class="facility-section">
+            <div class="facility-section-head">
+              <span class="facility-section-title">${title}</span>
+              <span class="facility-section-total ${sign}">${fmtMoney(total)}</span>
+            </div>
+            <div class="facility-list">${rows}</div>
+          </div>
+        `;
+      }).join('');
+    } catch (e) {
+      panel.style.display = '';
+      document.getElementById('facilities-body').innerHTML =
+        `<p class="balance-bar-empty">שגיאה בטעינת נתונים: ${escapeHtml(e.message)}</p>`;
+    }
+  }
+
   loadDashboardSummary();
+  loadFacilities();
 })();
 </script>
 </body>

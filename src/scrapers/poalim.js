@@ -18,6 +18,7 @@
 // src/sync-service.js, which is the only caller that sets this flag.
 import puppeteer from 'puppeteer';
 import { fetchPoalimCardsForAccount } from '../credit-cards/scrapers/poalim.js';
+import { fetchPoalimFacilitiesForAccount } from '../facilities/fetchers/poalim.js';
 
 const ACCOUNTS_URL = '/ServerServices/general/accounts?lang=he';
 const TXN_URL_PREFIX = '/ServerServices/current-account/transactions';
@@ -210,6 +211,13 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
         };
       });
 
+      let facilities = { deposits: [], loans: [], guarantees: [] };
+      try {
+        facilities = await fetchPoalimFacilitiesForAccount(page, accountId);
+      } catch (e) {
+        onProgress({ step: 'facilities-error', message: `שגיאה בשליפת פקדונות/הלוואות/ערבויות מחשבון ${accountId}: ${e.message}`, account: accountId });
+      }
+
       results.push({
         account: {
           accountIndex: acc.accountNumber,
@@ -222,6 +230,7 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
         },
         transactions: { history: transactions, pending: [] },
         additionalTransactionsFlag: false,
+        facilities,
       });
 
       onProgress({

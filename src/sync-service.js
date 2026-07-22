@@ -17,6 +17,7 @@ import { checkBalanceContinuity } from './balance-check.js';
 import {
   upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
 } from './credit-cards/db.js';
+import { upsertFacility, deleteStaleFacilities } from './facilities/db.js';
 
 /**
  * Syncs every account for one bank across all configured credential sets.
@@ -96,6 +97,27 @@ export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEve
       const fetched = historyToSave.length + pendingToSave.length;
 
       updateLastSync(accountId, accResult.account.balance);
+
+      // Deposits/loans/guarantees — informational only (no Priority push).
+      // A bank returning nothing for a category just means it's actually
+      // empty right now, and stale rows from the last sync (e.g. a loan that
+      // got paid off) are removed the same way stale card transactions are.
+      const facilities = accResult.facilities ?? { deposits: [], loans: [], guarantees: [] };
+      for (const category of ['deposits', 'loans', 'guarantees']) {
+        const items = facilities[category] ?? [];
+        for (const item of items) {
+          upsertFacility({
+            ...item,
+            bankId,
+            accountMaskedNumber: accResult.account.maskedNumber,
+            corporateName: accResult.account.corporateName,
+          });
+        }
+        deleteStaleFacilities(
+          bankId, accResult.account.maskedNumber, category.slice(0, -1),
+          items.map(i => i.externalId),
+        );
+      }
 
       try {
         const balanceResult = checkBalanceContinuity(getTransactionsForBalanceCheck(accountId));

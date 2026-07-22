@@ -24,6 +24,7 @@ import {
   getLastPushedAt,
 } from './db.js';
 import { getLastCardPushedAt } from './credit-cards/db.js';
+import { listFacilities } from './facilities/db.js';
 
 import { pushBalancesToFlow } from './flow-push.js';
 import { autoMatchCashnames, pushAccountToPriority } from './priority-service.js';
@@ -87,6 +88,15 @@ app.get('/api/banks', (req, res) => {
     has_scraper: !!registryById[b.id],
   }));
   res.json({ banks: merged });
+});
+
+app.get('/api/facilities', (req, res) => {
+  const all = listFacilities();
+  res.json({
+    deposits: all.filter(f => f.category === 'deposit'),
+    loans: all.filter(f => f.category === 'loan'),
+    guarantees: all.filter(f => f.category === 'guarantee'),
+  });
 });
 
 app.get('/api/priority/last-push', (req, res) => {

@@ -10,6 +10,7 @@
 //   6. For each account: changeAccount(index) → get428Index (transactions).
 import puppeteer from 'puppeteer-extra';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import { fetchMizrachiDepositsForAccount, fetchMizrachiLoansForAccount } from '../facilities/fetchers/mizrachi.js';
 
 // Mizrachi's get428Index (transactions) endpoint sits behind Radware Bot
 // Manager, which was bouncing every request with a SiteMinder re-auth
@@ -304,6 +305,19 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
       await sleep(500);
       await humanizeInteraction(page);
 
+      // Deposits + loans — fetched here (right after changeAccount, before
+      // the fragile get428Index/iframe transactions logic below) since
+      // they're unrelated to that endpoint's bot-detection issues and don't
+      // touch the page's iframes at all. A new tab is used for loans (legacy
+      // page); deposits is a plain same-page fetch.
+      let facilities = { deposits: [], loans: [], guarantees: [] };
+      try {
+        facilities.deposits = await fetchMizrachiDepositsForAccount(page);
+      } catch (e) {
+        onProgress({ step: 'facilities-error', message: `שגיאה בשליפת פקדונות מחשבון ${maskedNumber}: ${e.message}`, account: maskedNumber });
+      }
+      facilities.loans = await fetchMizrachiLoansForAccount(browser, onProgress);
+
       // One-time diagnostic (first account only) for the "get428Index always
       // bounces with errorcode=198" investigation — captures what a real
       // browser would actually be showing/holding right before the blocked
@@ -423,6 +437,7 @@ export async function scrapeMizrachi({ credentials, daysBack = 30, showBrowser =
         },
         transactions: { history: transactions, pending: [] },
         additionalTransactionsFlag: false,
+        facilities,
       });
 
       onProgress({

@@ -1,4 +1,5 @@
 import puppeteer from 'puppeteer';
+import { fetchLeumiLoansForAccount } from '../facilities/fetchers/leumi.js';
 
 const ACCOUNTS_URL_FRAG = '/available-accounts/ils';
 const TXN_DEFAULT_FRAG = '/transactions/default';
@@ -148,6 +149,14 @@ export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = fa
 
       // masked_number for Leumi is "855-11200/06" → branch 855
       const branchId = (acc.maskedClientNumber || '').split('-')[0] || null;
+
+      let loans = [];
+      try {
+        loans = await fetchLeumiLoansForAccount(page, acc.accountIndex, templateHeaders);
+      } catch (e) {
+        onProgress({ step: 'facilities-error', message: `שגיאה בשליפת הלוואות מחשבון ${acc.maskedClientNumber}: ${e.message}`, account: acc.maskedClientNumber });
+      }
+
       results.push({
         account: {
           accountIndex: acc.accountIndex,
@@ -160,6 +169,7 @@ export async function scrapeLeumi({ credentials, daysBack = 30, showBrowser = fa
         },
         transactions: { history, pending },
         additionalTransactionsFlag: flagged,
+        facilities: { deposits: [], loans, guarantees: [] },
       });
 
       onProgress({
