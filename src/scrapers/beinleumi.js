@@ -13,7 +13,15 @@
 //      real click sequence and intercept the resulting request's headers
 //      (which include the bearer token), then reuse those headers — with a
 //      fresh x-fibi-transaction-id — to fetch the actual desired date range.
-import puppeteer from 'puppeteer';
+// FIBI's legacy login servlet (MatafLoginServlet) exposes a showCaptcha
+// field and, like Mizrachi's mto.mizrahi-tefahot.co.il, appears to bot-check
+// the login flow specifically in headless mode — the same real login form
+// that a visible, human-driven browser sailed through timed out waiting for
+// the post-login redirect when run headless. Stealth patches the headless
+// fingerprints (navigator.webdriver etc.) the same way it does for Mizrachi.
+import puppeteer from 'puppeteer-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+puppeteer.use(StealthPlugin());
 
 const ymdIso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
@@ -33,6 +41,8 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
   });
   await new Promise(r => setTimeout(r, 500));
 
+  onProgress({ step: 'login-open-modal', message: 'פותח את חלונית ההתחברות…' });
+  await page.waitForSelector('a.login-trigger', { timeout: 20_000 });
   await page.evaluate(() => {
     const el = document.querySelector('a.login-trigger');
     if (el) el.click();
@@ -46,6 +56,7 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
   }
   if (!loginFrame) throw new Error('scrapeBeinleumi: login form iframe not found');
 
+  onProgress({ step: 'login-form-found', message: 'טופס ההתחברות נמצא, ממלא פרטים…' });
   await loginFrame.waitForSelector('#username', { timeout: 20_000 });
   await loginFrame.evaluate((uid, pwd) => {
     const setVal = (input, val) => {
@@ -58,13 +69,25 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
     setVal(document.querySelector('#password'), pwd);
   }, userId, password);
 
+  onProgress({ step: 'login-submit', message: 'לוחץ כניסה, ממתין לאישור…' });
   await loginFrame.evaluate(() => {
     const btn = document.querySelector('#continueBtn');
     if (!btn) throw new Error('Login button not found');
     btn.click();
   });
 
-  await page.waitForFunction(() => location.href.includes('online.fibi.co.il'), { timeout: 60_000 });
+  try {
+    await page.waitForFunction(() => location.href.includes('online.fibi.co.il'), { timeout: 60_000 });
+  } catch {
+    let captchaHint = false;
+    try {
+      captchaHint = await loginFrame.evaluate(() => {
+        const el = document.querySelector('#showCaptcha, [name="showCaptcha"]');
+        return !!(el && el.value && el.value !== 'false' && el.value !== '0');
+      });
+    } catch { /* frame may already be gone */ }
+    throw new Error(`scrapeBeinleumi: לא הופנה ל-online.fibi.co.il תוך 60 שניות אחרי לחיצת כניסה${captchaHint ? ' (יתכן ואומת captcha)' : ' — יתכן פרטי התחברות שגויים או חסימת בוט'}`);
+  }
   onProgress({ step: 'init-session', message: 'טוען את מסך הבית…' });
   await new Promise(r => setTimeout(r, 6_000));
 }
