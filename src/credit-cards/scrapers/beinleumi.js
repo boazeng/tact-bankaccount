@@ -89,67 +89,20 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
   await sleep(6_000);
 }
 
-// Mirrors src/scrapers/beinleumi.js's navigateToTransactions exactly: a
-// real sleep (not a same-tick evaluate round-trip) between opening the
-// top-nav dropdown and looking for the freshly-revealed sub-item is what
-// actually matters — a diff with no elapsed time between the "before" and
-// "after" DOM snapshots can never find anything "fresh".
-// A plain element.click() found a matching node and reported success both
-// times, yet page.url() never moved off #/accountSummary at all (confirmed
-// live) — so click() alone isn't reliably triggering Angular's handler here.
-// Dispatch a fuller, more "real" event sequence, and fail fast with a clear
-// diagnostic if a click had no observable effect instead of silently
-// carrying on to the next step.
-async function realClick(page, el) {
-  await el.evaluate((node) => {
-    for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click']) {
-      node.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
-    }
-  });
-}
-
-async function findLeafByText(page, text) {
-  return page.evaluateHandle((text) =>
-    Array.from(document.querySelectorAll('*'))
-      .find(e => e.children.length === 0 && (e.textContent || '').trim() === text),
-  text);
-}
+// Clicking through "כרטיסי אשראי" > "פירוט חיובים" turned out unreliable in
+// headless (confirmed live: page.url() never moved at all, with a fuller
+// pointerdown/mousedown/mouseup/click sequence and not just a bare click()).
+// Unlike checking transactions — which NEEDS a real click-through because
+// the modern Angular bff-* API only gets its auth token bootstrapped by the
+// app's own router — the credit-card charges screen is the legacy
+// server-rendered WPS portlet system (confirmed zero XHR/fetch calls) and
+// only needs the session cookie, so a direct goto() to the known hash route
+// works fine and sidesteps the whole click-reliability problem.
+const CARDS_SUMMARY_URL = 'https://online.fibi.co.il/appsng/Resources/PortalNG/shell/#/Online/OnCreditCardsMenu/OnCrCardsDetPayms/AuthCrCardsChrgDetPrev';
 
 async function navigateToCardsSummary(page, onProgress) {
   onProgress({ step: 'navigate', message: 'עובר למסך כרטיסי אשראי…' });
-  const urlBeforeNav = page.url();
-
-  const navHandle = await findLeafByText(page, 'כרטיסי אשראי');
-  const navEl = navHandle.asElement();
-  if (!navEl) throw new Error('scrapeBeinleumiCards: "כרטיסי אשראי" nav item not found');
-  await realClick(page, navEl);
-
-  const navChanged = await page.waitForFunction(
-    (before) => location.href !== before,
-    { timeout: 8_000 },
-    urlBeforeNav,
-  ).then(() => true).catch(() => false);
-  if (!navChanged) {
-    throw new Error(`scrapeBeinleumiCards: לחיצה על "כרטיסי אשראי" לא שינתה את הדף (עדיין ${page.url().slice(0, 90)})`);
-  }
-  onProgress({ step: 'cards-menu-opened', message: 'תפריט כרטיסי אשראי נפתח, מחפש פירוט חיובים…' });
-  await sleep(2_000);
-
-  const urlBeforeDetail = page.url();
-  const detailHandle = await findLeafByText(page, 'פירוט חיובים');
-  const detailEl = detailHandle.asElement();
-  if (!detailEl) throw new Error('scrapeBeinleumiCards: "פירוט חיובים" nav item not found');
-  await realClick(page, detailEl);
-
-  // This step may not always change location.href (it can load straight
-  // into the wps/myportal iframe without touching the shell's own URL), so
-  // don't fail fast here — just give it time to settle before the caller
-  // polls for the portlet frame itself.
-  await page.waitForFunction(
-    (before) => location.href !== before,
-    { timeout: 5_000 },
-    urlBeforeDetail,
-  ).catch(() => {});
+  await page.goto(CARDS_SUMMARY_URL, { waitUntil: 'networkidle2', timeout: 60_000 });
   await sleep(2_000);
 }
 
