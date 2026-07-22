@@ -44,16 +44,27 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
     if (el) el.click();
   });
 
+  // Poll fresh — re-querying page.frames() and confirming #username is
+  // actually present — until a stable frame is found; the MatafLoginServlet
+  // iframe can go through its own internal reload right after appearing (a
+  // transient frame replaced almost immediately), so trusting the first
+  // url() match and holding it across later awaited steps risks "Attempted
+  // to use detached Frame".
   let loginFrame = null;
   const frameWaitStart = Date.now();
   while (!loginFrame && Date.now() - frameWaitStart < 20_000) {
-    loginFrame = page.frames().find(f => /MatafLoginServlet/.test(f.url()));
+    const candidates = page.frames().filter(f => /MatafLoginServlet/.test(f.url()) && !f.isDetached());
+    for (const frame of candidates) {
+      try {
+        const ready = await frame.evaluate(() => !!document.querySelector('#username'));
+        if (ready) { loginFrame = frame; break; }
+      } catch { /* detached mid-check — try the next candidate / next poll */ }
+    }
     if (!loginFrame) await sleep(500);
   }
   if (!loginFrame) throw new Error('scrapeBeinleumiCards: login form iframe not found');
 
   onProgress({ step: 'login-form-found', message: 'טופס ההתחברות נמצא, ממלא פרטים…' });
-  await loginFrame.waitForSelector('#username', { timeout: 20_000 });
   await loginFrame.type('#username', userId, { delay: 30 });
   await loginFrame.type('#password', password, { delay: 30 });
 
@@ -198,7 +209,10 @@ const parseAmount = (s) => {
 // Same soft/probabilistic login-timeout seen (and retried) in the
 // checking-account scraper — worth one full fresh-browser retry before
 // giving up. See src/scrapers/beinleumi.js for the matching note.
-const LOGIN_TIMEOUT_MARKER = 'לא הופנה ל-online.fibi.co.il';
+const isTransientLoginError = (err) => {
+  const msg = String(err?.message || '');
+  return msg.includes('לא הופנה ל-online.fibi.co.il') || msg.includes('detached Frame');
+};
 
 export async function scrapeBeinleumiCards({ credentials, showBrowser = false, onProgress = () => {} }) {
   const MAX_ATTEMPTS = 2;
@@ -206,8 +220,7 @@ export async function scrapeBeinleumiCards({ credentials, showBrowser = false, o
     try {
       return await attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgress });
     } catch (err) {
-      const isLoginTimeout = String(err.message || '').includes(LOGIN_TIMEOUT_MARKER);
-      if (!isLoginTimeout || attempt === MAX_ATTEMPTS) throw err;
+      if (!isTransientLoginError(err) || attempt === MAX_ATTEMPTS) throw err;
       onProgress({ step: 'retry', message: `ניסיון ${attempt} נכשל בהתחברות — מנסה שוב מהתחלה…` });
     }
   }

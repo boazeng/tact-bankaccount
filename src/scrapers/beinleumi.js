@@ -48,16 +48,28 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
     if (el) el.click();
   });
 
+  // The MatafLoginServlet iframe can go through its own internal reload
+  // right after appearing (a transient frame replaced almost immediately —
+  // same class of race as the credit-card portlet's token-redirect frame),
+  // so holding one frame reference across multiple awaited steps risks
+  // "Attempted to use detached Frame". Poll fresh — re-querying
+  // page.frames() and confirming #username is actually present — until a
+  // stable one is found, rather than trusting the first url() match.
   let loginFrame = null;
   const frameWaitStart = Date.now();
   while (!loginFrame && Date.now() - frameWaitStart < 20_000) {
-    loginFrame = page.frames().find(f => /MatafLoginServlet/.test(f.url()));
+    const candidates = page.frames().filter(f => /MatafLoginServlet/.test(f.url()) && !f.isDetached());
+    for (const frame of candidates) {
+      try {
+        const ready = await frame.evaluate(() => !!document.querySelector('#username'));
+        if (ready) { loginFrame = frame; break; }
+      } catch { /* detached mid-check — try the next candidate / next poll */ }
+    }
     if (!loginFrame) await new Promise(r => setTimeout(r, 500));
   }
   if (!loginFrame) throw new Error('scrapeBeinleumi: login form iframe not found');
 
   onProgress({ step: 'login-form-found', message: 'טופס ההתחברות נמצא, ממלא פרטים…' });
-  await loginFrame.waitForSelector('#username', { timeout: 20_000 });
   // Real per-character keyboard events, not a bulk value-set — the legacy
   // MatafLoginServlet form likely keeps #continueBtn disabled until its own
   // JS validation sees keyup events, so a native-setter bulk fill (which
@@ -203,7 +215,10 @@ function mapTransactions(rawTransactions) {
 // block, so one full retry with a completely fresh browser (new profile,
 // new fingerprint) is worth it before giving up, same spirit as this app's
 // other banks' pagination-retry patterns.
-const LOGIN_TIMEOUT_MARKER = 'לא הופנה ל-online.fibi.co.il';
+const isTransientLoginError = (err) => {
+  const msg = String(err?.message || '');
+  return msg.includes('לא הופנה ל-online.fibi.co.il') || msg.includes('detached Frame');
+};
 
 export async function scrapeBeinleumi({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {} }) {
   const MAX_ATTEMPTS = 2;
@@ -211,8 +226,7 @@ export async function scrapeBeinleumi({ credentials, daysBack = 30, showBrowser 
     try {
       return await attemptScrapeBeinleumi({ credentials, daysBack, showBrowser, onProgress });
     } catch (err) {
-      const isLoginTimeout = String(err.message || '').includes(LOGIN_TIMEOUT_MARKER);
-      if (!isLoginTimeout || attempt === MAX_ATTEMPTS) throw err;
+      if (!isTransientLoginError(err) || attempt === MAX_ATTEMPTS) throw err;
       onProgress({ step: 'retry', message: `ניסיון ${attempt} נכשל בהתחברות — מנסה שוב מהתחלה…` });
     }
   }
