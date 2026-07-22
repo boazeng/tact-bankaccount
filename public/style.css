@@ -259,26 +259,37 @@ header {
 .bank-row .amt.pos { color: var(--color-pos); }
 .bank-row .amt.neg { color: var(--color-accent); }
 
-.facility-section + .facility-section {
-  margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--color-border);
+/* Per-company facility tiles (deposits/loans/guarantees), nested inside
+   .company-group right under the bank breakdown — see [[facilities_deposits_loans_guarantees]] */
+.company-facilities { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.cf-tile {
+  flex: 1 1 0; min-width: 128px;
+  background: var(--color-bg-white); border: 1px solid var(--color-border-soft);
+  border-radius: var(--radius-md); padding: 8px 12px;
 }
-.facility-section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 10px; gap: 12px; }
-.facility-section-title { font-size: 0.95rem; font-weight: 800; color: var(--color-text); }
-.facility-section-total { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.facility-section-total.pos { color: var(--color-pos); }
-.facility-section-total.neg { color: var(--color-accent); }
-.facility-list { display: flex; flex-direction: column; gap: 6px; }
-.facility-row {
-  display: flex; justify-content: space-between; align-items: center; gap: 14px;
-  padding: 9px 14px; border-radius: var(--radius-md);
-  background: var(--color-bg); border-inline-start: 3px solid var(--color-border);
+.cf-tile > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 6px; }
+.cf-tile > summary::-webkit-details-marker { display: none; }
+.cf-tile[open] { background: color-mix(in srgb, var(--color-primary) 4%, var(--color-bg-white)); }
+.cf-icon { font-size: 0.95rem; flex: none; }
+.cf-label {
+  font-size: 0.72rem; font-weight: 700; color: var(--color-text-light);
+  flex: 1; display: flex; align-items: center; gap: 5px;
 }
-.facility-row .fr-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.facility-row .fr-label { font-weight: 700; color: var(--color-text); font-size: 0.92rem; }
-.facility-row .fr-sub { font-size: 0.78rem; color: var(--color-text-light); }
-.facility-row .fr-amt { font-weight: 800; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.facility-row .fr-amt.pos { color: var(--color-pos); }
-.facility-row .fr-amt.neg { color: var(--color-accent); }
+.cf-count {
+  font-size: 0.62rem; font-weight: 700; color: var(--color-text-light);
+  background: var(--color-border-soft); border-radius: 999px; padding: 1px 6px;
+}
+.cf-value { font-weight: 800; font-variant-numeric: tabular-nums; font-size: 0.85rem; white-space: nowrap; }
+.cf-value.pos { color: var(--color-pos); }
+.cf-value.neg { color: var(--color-accent); }
+.cf-tile.cf-empty { opacity: 0.55; }
+.cf-tile.cf-empty .cf-value { color: var(--color-text-light); }
+
+.cf-detail { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--color-border-soft); display: flex; flex-direction: column; gap: 7px; }
+.cf-item { display: grid; grid-template-columns: 1fr auto; column-gap: 8px; row-gap: 1px; font-size: 0.78rem; }
+.cf-item-label { grid-column: 1; grid-row: 1; font-weight: 700; color: var(--color-text); }
+.cf-item-amt { grid-column: 2; grid-row: 1; font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cf-item-sub { grid-column: 1 / -1; grid-row: 2; color: var(--color-text-light); font-size: 0.72rem; }
 
 /* ───────── page head ───────── */
 .page-head { position: relative; padding: 32px 0 22px; overflow: hidden; }

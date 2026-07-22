@@ -64,13 +64,6 @@
       </div>
       <div class="balances-list" id="balances-list"></div>
     </div>
-
-    <div class="balances-panel" id="facilities-panel" style="display:none">
-      <div class="balances-head">
-        <div class="balances-title">פקדונות, הלוואות וערבויות</div>
-      </div>
-      <div id="facilities-body"></div>
-    </div>
   </div>
 
   <div id="view-bank" style="display:none">
@@ -166,17 +159,84 @@
     }
   }
 
+  const BANK_NAMES = { leumi: 'בנק לאומי', poalim: 'בנק הפועלים', mizrachi: 'בנק מזרחי-טפחות', discount: 'בנק דיסקונט', beinleumi: 'הבנק הבינלאומי' };
+
+  const FACILITY_KINDS = [
+    { key: 'deposits', category: 'deposit', label: 'פקדונות', icon: '💰', sign: 'pos', mul: 1 },
+    { key: 'loans', category: 'loan', label: 'הלוואות', icon: '📉', sign: 'neg', mul: -1 },
+    { key: 'guarantees', category: 'guarantee', label: 'ערבויות', icon: '📜', sign: 'neg', mul: -1 },
+  ];
+
+  function renderFacilityDetail(kind, items) {
+    return items
+      .slice()
+      .sort((a, b) => (Number(b.current_amount) || 0) - (Number(a.current_amount) || 0))
+      .map((f) => {
+        const subParts = [];
+        if (kind.key === 'guarantees' && f.counterparty) subParts.push(`לטובת ${f.counterparty}`);
+        if (f.end_date) subParts.push(`עד ${fmtDate(f.end_date)}`);
+        if (kind.key === 'loans' && f.next_payment_date) {
+          subParts.push(`תשלום הבא ${fmtDate(f.next_payment_date)}${f.next_payment_amount ? ' · ' + fmtMoney(f.next_payment_amount) : ''}`);
+        }
+        return `
+          <div class="cf-item">
+            <span class="cf-item-label">${escapeHtml(f.label || '—')}</span>
+            <span class="cf-item-sub">${escapeHtml(subParts.join(' · '))}</span>
+            <span class="cf-item-amt">${fmtMoney(f.current_amount * kind.mul)}</span>
+          </div>
+        `;
+      }).join('');
+  }
+
+  function renderFacilityTiles(facilitiesByKind) {
+    return `
+      <div class="company-facilities">
+        ${FACILITY_KINDS.map((kind) => {
+          const items = facilitiesByKind[kind.category] || [];
+          if (!items.length) {
+            return `
+              <div class="cf-tile cf-empty">
+                <span class="cf-icon">${kind.icon}</span>
+                <span class="cf-label">${kind.label}</span>
+                <span class="cf-value">—</span>
+              </div>
+            `;
+          }
+          const total = items.reduce((s, f) => s + (Number(f.current_amount) || 0), 0) * kind.mul;
+          return `
+            <details class="cf-tile">
+              <summary>
+                <span class="cf-icon">${kind.icon}</span>
+                <span class="cf-label">${kind.label}<span class="cf-count">${items.length}</span></span>
+                <span class="cf-value ${kind.sign}">${fmtMoney(total)}</span>
+              </summary>
+              <div class="cf-detail">${renderFacilityDetail(kind, items)}</div>
+            </details>
+          `;
+        }).join('')}
+      </div>
+    `;
+  }
+
   async function loadDashboardSummary() {
     try {
-      const [banksRes, pushRes] = await Promise.all([fetch('/api/banks'), fetch('/api/priority/last-push')]);
+      const [banksRes, pushRes, facilitiesRes] = await Promise.all([
+        fetch('/api/banks'), fetch('/api/priority/last-push'), fetch('/api/facilities'),
+      ]);
       const { banks } = await banksRes.json();
       const { lastPushedAt } = await pushRes.json();
+      const facilities = await facilitiesRes.json();
 
       // "Company" = the account's corporate name — a company can hold
       // accounts at more than one bank (e.g. "אריאל" across 3 banks), so
       // this groups by name and keeps a per-bank sum nested underneath,
       // rather than one row per bank+branch.
       const companies = new Map();
+      const getCompany = (name) => {
+        if (!companies.has(name)) companies.set(name, { name, total: 0, banks: new Map(), facilities: {} });
+        return companies.get(name);
+      };
+
       let lastSync = null;
       for (const bank of banks) {
         if (bank.last_sync_at && (!lastSync || bank.last_sync_at > lastSync)) lastSync = bank.last_sync_at;
@@ -186,16 +246,27 @@
           const companyName = a.corporate_name || a.branch_name
             || (a.branch_id ? `סניף ${a.branch_id} — ${bank.name_he}` : bank.name_he);
 
-          if (!companies.has(companyName)) companies.set(companyName, { name: companyName, total: 0, banks: new Map() });
-          const company = companies.get(companyName);
+          const company = getCompany(companyName);
           company.total += bal;
           if (!company.banks.has(bank.id)) company.banks.set(bank.id, { name: bank.name_he, balance: 0 });
           company.banks.get(bank.id).balance += bal;
         }
       }
 
+      // Facilities are keyed by the same corporate_name the sync stored them
+      // under — merged into the matching company card rather than shown as
+      // their own separate panel, so every company shows all four figures
+      // (checking, deposits, loans, guarantees) together in one place.
+      for (const kind of FACILITY_KINDS) {
+        for (const f of facilities[kind.key] || []) {
+          const companyName = f.corporate_name || (BANK_NAMES[f.bank_id] || f.bank_id);
+          const company = getCompany(companyName);
+          (company.facilities[kind.category] ??= []).push(f);
+        }
+      }
+
       const rows = Array.from(companies.values())
-        .filter((c) => c.total)
+        .filter((c) => c.total || Object.keys(c.facilities).length)
         .sort((a, b) => Math.abs(b.total) - Math.abs(a.total));
 
       document.getElementById('balances-title').textContent = lastSync
@@ -207,7 +278,7 @@
       const grandTotal = rows.reduce((s, c) => s + c.total, 0);
       const totalEl = document.getElementById('balances-total');
       totalEl.innerHTML = rows.length
-        ? `<span class="bt-lbl">סה״כ</span><span class="bt-amt ${signCls(grandTotal)}">${fmtMoney(grandTotal)}</span>`
+        ? `<span class="bt-lbl">סה״כ עו״ש</span><span class="bt-amt ${signCls(grandTotal)}">${fmtMoney(grandTotal)}</span>`
         : '';
 
       const maxAbs = Math.max(1, ...rows.map((c) => Math.abs(c.total)));
@@ -231,6 +302,7 @@
                 </div>
                 <div class="company-share"><i style="width:${share}%;background:${color}"></i></div>
                 ${bankRows}
+                ${renderFacilityTiles(c.facilities)}
               </div>
             `;
           }).join('')
@@ -244,65 +316,7 @@
     }
   }
 
-  const BANK_NAMES = { leumi: 'בנק לאומי', poalim: 'בנק הפועלים', mizrachi: 'בנק מזרחי-טפחות', discount: 'בנק דיסקונט', beinleumi: 'הבנק הבינלאומי' };
-
-  async function loadFacilities() {
-    const panel = document.getElementById('facilities-panel');
-    try {
-      const res = await fetch('/api/facilities');
-      const { deposits, loans, guarantees } = await res.json();
-
-      const sections = [
-        { key: 'deposits', title: 'פקדונות', items: deposits, sign: 'pos' },
-        { key: 'loans', title: 'הלוואות', items: loans, sign: 'neg' },
-        { key: 'guarantees', title: 'ערבויות', items: guarantees, sign: 'neg' },
-      ].filter(s => s.items.length);
-
-      if (!sections.length) { panel.style.display = 'none'; return; }
-      panel.style.display = '';
-
-      document.getElementById('facilities-body').innerHTML = sections.map(({ key, title, items, sign }) => {
-        const total = items.reduce((s, f) => s + (Number(f.current_amount) || 0), 0);
-        const rows = items
-          .slice()
-          .sort((a, b) => (Number(b.current_amount) || 0) - (Number(a.current_amount) || 0))
-          .map((f) => {
-            const bankName = BANK_NAMES[f.bank_id] || f.bank_id;
-            const subParts = [bankName, f.corporate_name].filter(Boolean);
-            if (key === 'guarantees' && f.counterparty) subParts.push(`לטובת ${f.counterparty}`);
-            if (f.end_date) subParts.push(`עד ${fmtDate(f.end_date)}`);
-            if (key === 'loans' && f.next_payment_date) {
-              subParts.push(`תשלום הבא ${fmtDate(f.next_payment_date)}${f.next_payment_amount ? ' · ' + fmtMoney(f.next_payment_amount) : ''}`);
-            }
-            return `
-              <div class="facility-row">
-                <div class="fr-main">
-                  <span class="fr-label">${escapeHtml(f.label || '—')}</span>
-                  <span class="fr-sub">${escapeHtml(subParts.join(' · '))}</span>
-                </div>
-                <span class="fr-amt ${sign}">${fmtMoney(f.current_amount)}</span>
-              </div>
-            `;
-          }).join('');
-        return `
-          <div class="facility-section">
-            <div class="facility-section-head">
-              <span class="facility-section-title">${title}</span>
-              <span class="facility-section-total ${sign}">${fmtMoney(total)}</span>
-            </div>
-            <div class="facility-list">${rows}</div>
-          </div>
-        `;
-      }).join('');
-    } catch (e) {
-      panel.style.display = '';
-      document.getElementById('facilities-body').innerHTML =
-        `<p class="balance-bar-empty">שגיאה בטעינת נתונים: ${escapeHtml(e.message)}</p>`;
-    }
-  }
-
   loadDashboardSummary();
-  loadFacilities();
 })();
 </script>
 </body>
