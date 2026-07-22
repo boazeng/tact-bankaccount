@@ -196,7 +196,29 @@ function mapTransactions(rawTransactions) {
   });
 }
 
+// FIBI's login occasionally times out waiting for the post-login redirect
+// even with stealth applied and a real per-character typed form (observed
+// live: worked, then failed the same way on a later attempt, no code
+// change in between) — soft/probabilistic bot-scoring rather than a hard
+// block, so one full retry with a completely fresh browser (new profile,
+// new fingerprint) is worth it before giving up, same spirit as this app's
+// other banks' pagination-retry patterns.
+const LOGIN_TIMEOUT_MARKER = 'לא הופנה ל-online.fibi.co.il';
+
 export async function scrapeBeinleumi({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {} }) {
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await attemptScrapeBeinleumi({ credentials, daysBack, showBrowser, onProgress });
+    } catch (err) {
+      const isLoginTimeout = String(err.message || '').includes(LOGIN_TIMEOUT_MARKER);
+      if (!isLoginTimeout || attempt === MAX_ATTEMPTS) throw err;
+      onProgress({ step: 'retry', message: `ניסיון ${attempt} נכשל בהתחברות — מנסה שוב מהתחלה…` });
+    }
+  }
+}
+
+async function attemptScrapeBeinleumi({ credentials, daysBack, showBrowser, onProgress }) {
   const { userId, password, loginUrl } = credentials;
   if (!userId || !password) {
     throw new Error('scrapeBeinleumi: missing userId/password');

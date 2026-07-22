@@ -191,7 +191,25 @@ const parseAmount = (s) => {
   return Number.isFinite(n) ? n : 0;
 };
 
+// Same soft/probabilistic login-timeout seen (and retried) in the
+// checking-account scraper — worth one full fresh-browser retry before
+// giving up. See src/scrapers/beinleumi.js for the matching note.
+const LOGIN_TIMEOUT_MARKER = 'לא הופנה ל-online.fibi.co.il';
+
 export async function scrapeBeinleumiCards({ credentials, showBrowser = false, onProgress = () => {} }) {
+  const MAX_ATTEMPTS = 2;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      return await attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgress });
+    } catch (err) {
+      const isLoginTimeout = String(err.message || '').includes(LOGIN_TIMEOUT_MARKER);
+      if (!isLoginTimeout || attempt === MAX_ATTEMPTS) throw err;
+      onProgress({ step: 'retry', message: `ניסיון ${attempt} נכשל בהתחברות — מנסה שוב מהתחלה…` });
+    }
+  }
+}
+
+async function attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgress }) {
   const { userId, password, loginUrl } = credentials;
   if (!userId || !password) {
     throw new Error('scrapeBeinleumiCards: missing userId/password');
