@@ -58,35 +58,39 @@ async function loginToFibi(page, loginUrl, userId, password, onProgress) {
 
   onProgress({ step: 'login-form-found', message: 'טופס ההתחברות נמצא, ממלא פרטים…' });
   await loginFrame.waitForSelector('#username', { timeout: 20_000 });
-  await loginFrame.evaluate((uid, pwd) => {
-    const setVal = (input, val) => {
-      const native = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
-      native.call(input, val);
-      input.dispatchEvent(new Event('input', { bubbles: true }));
-      input.dispatchEvent(new Event('change', { bubbles: true }));
-    };
-    setVal(document.querySelector('#username'), uid);
-    setVal(document.querySelector('#password'), pwd);
-  }, userId, password);
+  // Real per-character keyboard events, not a bulk value-set — the legacy
+  // MatafLoginServlet form likely keeps #continueBtn disabled until its own
+  // JS validation sees keyup events, so a native-setter bulk fill (which
+  // worked for other banks' forms) can silently leave the button disabled
+  // here, making the later click a no-op with no error.
+  await loginFrame.type('#username', userId, { delay: 30 });
+  await loginFrame.type('#password', password, { delay: 30 });
 
   onProgress({ step: 'login-submit', message: 'לוחץ כניסה, ממתין לאישור…' });
+  await loginFrame.waitForFunction(() => {
+    const btn = document.querySelector('#continueBtn');
+    return btn && !btn.disabled;
+  }, { timeout: 10_000 }).catch(() => {});
   await loginFrame.evaluate(() => {
     const btn = document.querySelector('#continueBtn');
     if (!btn) throw new Error('Login button not found');
+    if (btn.disabled) throw new Error('scrapeBeinleumi: כפתור הכניסה עדיין מנוטרל אחרי מילוי הפרטים');
     btn.click();
   });
 
   try {
     await page.waitForFunction(() => location.href.includes('online.fibi.co.il'), { timeout: 60_000 });
   } catch {
-    let captchaHint = false;
+    let hint = '';
     try {
-      captchaHint = await loginFrame.evaluate(() => {
-        const el = document.querySelector('#showCaptcha, [name="showCaptcha"]');
-        return !!(el && el.value && el.value !== 'false' && el.value !== '0');
+      hint = await loginFrame.evaluate(() => {
+        const captchaEl = document.querySelector('#showCaptcha, [name="showCaptcha"]');
+        const hasCaptcha = !!(captchaEl && captchaEl.value && captchaEl.value !== 'false' && captchaEl.value !== '0');
+        const errorText = (document.body.innerText || '').trim().slice(0, 300);
+        return hasCaptcha ? `יתכן ואומת captcha. טקסט בטופס: ${errorText}` : `טקסט בטופס: ${errorText}`;
       });
-    } catch { /* frame may already be gone */ }
-    throw new Error(`scrapeBeinleumi: לא הופנה ל-online.fibi.co.il תוך 60 שניות אחרי לחיצת כניסה${captchaHint ? ' (יתכן ואומת captcha)' : ' — יתכן פרטי התחברות שגויים או חסימת בוט'}`);
+    } catch { hint = 'לא ניתן היה לקרוא את תוכן הטופס (ה-iframe כבר לא קיים)'; }
+    throw new Error(`scrapeBeinleumi: לא הופנה ל-online.fibi.co.il תוך 60 שניות אחרי לחיצת כניסה — ${hint}`);
   }
   onProgress({ step: 'init-session', message: 'טוען את מסך הבית…' });
   await new Promise(r => setTimeout(r, 6_000));
