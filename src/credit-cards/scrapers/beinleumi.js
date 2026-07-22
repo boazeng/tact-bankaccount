@@ -119,14 +119,14 @@ async function navigateToCardsSummary(page, onProgress) {
 // summary frame every time (it has plenty of text too), so every month came
 // back with 0 rows. Iterate newest-first (page.frames() is creation-order)
 // and let the caller assert what content it actually needs.
-async function findStablePortletFrame(page, { timeoutMs = 45_000, requireFn = null } = {}) {
+async function findStablePortletFrame(page, { timeoutMs = 45_000, requireFn = null, requireFnArg = undefined } = {}) {
   const defaultCheck = () => (document.body?.innerText || '').trim().length > 20;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const candidates = page.frames().filter(f => /wps\/myportal/.test(f.url()) && !f.isDetached()).reverse();
     for (const frame of candidates) {
       try {
-        const ok = await frame.evaluate(requireFn || defaultCheck);
+        const ok = await frame.evaluate(requireFn || defaultCheck, requireFnArg);
         if (ok) return frame;
       } catch { /* detached mid-check — try the next candidate */ }
     }
@@ -273,6 +273,15 @@ async function attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgres
     // its transactions, matching poalim.js/discount.js's per-card grouping.
     const byCard = new Map();
 
+    // submitLinkForm() reloads its OWN frame in place (same Frame object,
+    // never detaches) rather than replacing it with a new one — confirmed
+    // live: all 6 months came back with February's 6 rows each (36 total),
+    // because "a table exists" was true instantly, before the reload had
+    // even started, so every iteration re-read the still-present PREVIOUS
+    // month's table. Must wait for the title text to actually change away
+    // from whatever it was before this call, not just "a table exists".
+    let lastBillingText = null;
+
     for (const link of links) {
       const { last4, vendor } = parseCardLabel(link.label);
       onProgress({ step: 'fetching-month', message: `טוען חיוב ${vendor || ''} ${last4 || ''} — ${link.dateParam}`, account: last4 });
@@ -287,17 +296,26 @@ async function attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgres
         continue;
       }
 
-      // Must specifically be the detail page (has the transactions table),
-      // not just any surviving wps/myportal frame — the summary frame can
-      // still be alive at this point since submitLinkForm() was called
-      // programmatically rather than via a real navigating click.
+      const previousBillingText = lastBillingText;
       const detailFrame = await findStablePortletFrame(page, {
-        requireFn: () => !!document.querySelector('table[id^="hiuvumTbl"]'),
+        requireFn: (prevText) => {
+          const table = document.querySelector('table[id^="hiuvumTbl"]');
+          if (!table) return false;
+          const titleDiv = document.querySelector('[class*="TitleNIs_"]');
+          const text = titleDiv ? titleDiv.textContent.trim() : null;
+          // First month of the whole run has no "previous" to differ from.
+          return prevText == null || text !== prevText;
+        },
+        requireFnArg: previousBillingText,
       });
       if (!detailFrame) {
-        onProgress({ step: 'month-error', message: `מסגרת הפירוט לא נטענה עבור ${link.dateParam}`, account: last4 });
+        onProgress({ step: 'month-error', message: `מסגרת הפירוט לא נטענה/התעדכנה עבור ${link.dateParam}`, account: last4 });
         continue;
       }
+      lastBillingText = await detailFrame.evaluate(() => {
+        const titleDiv = document.querySelector('[class*="TitleNIs_"]');
+        return titleDiv ? titleDiv.textContent.trim() : null;
+      }).catch(() => previousBillingText);
 
       const rows = await scrapeMonthDetail(detailFrame, last4);
       const foreignRows = rows.filter(r => r.isForeign);
