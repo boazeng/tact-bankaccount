@@ -132,11 +132,19 @@ async function navigateToTransactions(page, onProgress) {
   await page.waitForFunction(() => location.hash.includes('accountTransactions'), { timeout: 30_000 });
 }
 
-async function fetchJson(page, url) {
-  return page.evaluate(async (url) => {
-    const r = await fetch(url, { credentials: 'include' });
+// The legacy MatafAngularRestApiService endpoints (e.g. userData) work with
+// just the session cookie. The modern bff-* endpoints additionally require
+// the Authorization bearer token the app itself only attaches via its own
+// HttpClient interceptor — a plain fetch() without it gets a silent 401
+// (body: null), which upstream turned into a confusing "no data" error
+// instead of a clear auth failure. authHeaders is optional so callers that
+// don't need it (userData) can omit it.
+async function fetchJson(page, url, authHeaders = null) {
+  return page.evaluate(async (url, authHeaders) => {
+    const headers = authHeaders ? { ...authHeaders, 'x-fibi-transaction-id': crypto.randomUUID() } : undefined;
+    const r = await fetch(url, { credentials: 'include', headers });
     return { status: r.status, body: r.ok ? await r.json() : null };
-  }, url);
+  }, url, authHeaders);
 }
 
 async function fetchTransactionsList(page, templateHeaders, accountNumber, accountType, branch, fromStr, toStr) {
@@ -233,10 +241,10 @@ export async function scrapeBeinleumi({ credentials, daysBack = 30, showBrowser 
     const accounts = userDataResp.body?.accounts ?? [];
     onProgress({ step: 'accounts-found', message: `נמצאו ${accounts.length} חשבונות`, count: accounts.length });
 
-    const accountTypesResp = await fetchJson(page, `/appsng/bff-balancetransactions/api/v1/transactions/accountType?uid=${cryptoRandomUUID()}`);
+    const accountTypesResp = await fetchJson(page, `/appsng/bff-balancetransactions/api/v1/transactions/accountType?uid=${cryptoRandomUUID()}`, templateHeaders);
     const accountTypes = accountTypesResp.body?.accountType ?? [];
     const primaryType = accountTypes[0];
-    if (!primaryType) throw new Error('scrapeBeinleumi: no account type returned');
+    if (!primaryType) throw new Error(`scrapeBeinleumi: no account type returned (HTTP ${accountTypesResp.status})`);
 
     const results = [];
     for (const acc of accounts) {
@@ -247,7 +255,7 @@ export async function scrapeBeinleumi({ credentials, daysBack = 30, showBrowser 
 
       onProgress({ step: 'fetching-account', message: `מוריד תנועות מחשבון ${maskedNumber}`, account: maskedNumber });
 
-      const balResp = await fetchJson(page, `/appsng/bff-balancetransactions/api/v1/transactions/balances/${primaryType.accountType}?uid=${cryptoRandomUUID()}`);
+      const balResp = await fetchJson(page, `/appsng/bff-balancetransactions/api/v1/transactions/balances/${primaryType.accountType}?uid=${cryptoRandomUUID()}`, templateHeaders);
       const listResp = await fetchTransactionsList(page, templateHeaders, accountNumber, primaryType.accountType, branch, fromStr, toStr);
 
       if (listResp.status !== 200 || !listResp.body?.transactions) {
