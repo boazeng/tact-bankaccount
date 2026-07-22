@@ -8,7 +8,16 @@
 //   4. Fill OTP, submit, wait for dashboard
 //   5. Read XSRF-TOKEN cookie, then use the API directly for accounts +
 //      transactions (same pattern as Leumi/Discount)
+//
+// Poalim requires a fresh SMS code on EVERY login, unlike the other banks —
+// so if the credit-card sync ran its own separate login right after this
+// one, the user had to type the code twice back-to-back. `fetchCards: true`
+// reuses this same already-authenticated session to also pull card data
+// (via fetchPoalimCardsForAccount, shared with the standalone credit-cards
+// scraper) so callers only need to satisfy onSmsRequired once. See
+// src/sync-service.js, which is the only caller that sets this flag.
 import puppeteer from 'puppeteer';
+import { fetchPoalimCardsForAccount } from '../credit-cards/scrapers/poalim.js';
 
 const ACCOUNTS_URL = '/ServerServices/general/accounts?lang=he';
 const TXN_URL_PREFIX = '/ServerServices/current-account/transactions';
@@ -18,7 +27,7 @@ const ymd = (d) => `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0'
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {}, onSmsRequired }) {
+export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = false, onProgress = () => {}, onSmsRequired, fetchCards = false }) {
   const { userId, password, loginUrl } = credentials;
   if (!userId || !password || !loginUrl) {
     throw new Error('scrapePoalim: missing userId/password/loginUrl');
@@ -127,6 +136,7 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
     onProgress({ step: 'accounts-found', message: `נמצאו ${accountsList.length} חשבונות`, count: accountsList.length });
 
     const results = [];
+    const cardResults = [];
     for (const acc of accountsList) {
       const accountId = `${acc.bankNumber}-${acc.branchNumber}-${acc.accountNumber}`;
       const productLabel = acc.productLabel || `${acc.branchNumber} ${acc.accountNumber}`;
@@ -220,10 +230,14 @@ export async function scrapePoalim({ credentials, daysBack = 30, showBrowser = f
         account: accountId,
         count: transactions.length,
       });
+
+      if (fetchCards) {
+        cardResults.push(...await fetchPoalimCardsForAccount(page, acc, onProgress));
+      }
     }
 
     onProgress({ step: 'done', message: `סיום: ${results.length} חשבונות`, total: results.length });
-    return { fromDate: fromStr, toDate: toStr, accounts: results };
+    return { fromDate: fromStr, toDate: toStr, accounts: results, cards: fetchCards ? cardResults : undefined };
   } finally {
     await browser.close();
   }

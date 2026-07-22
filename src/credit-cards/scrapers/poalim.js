@@ -2,13 +2,177 @@ import puppeteer from 'puppeteer';
 
 // Independent copy of the login flow from src/scrapers/poalim.js — kept
 // separate on purpose (see discount.js: the credit-cards feature shares zero
-// code with the checking-account scrapers).
+// code with the checking-account scrapers). Poalim is the one exception:
+// it requires a fresh SMS code on every login, so running the bank sync and
+// the card sync as two separate sessions meant the user had to type the code
+// twice back-to-back. fetchPoalimCardsForAccount below is exported so
+// src/scrapers/poalim.js can pull card data into the SAME already-logged-in
+// session instead of opening a second browser and logging in again.
 const DASHBOARD_URL_FRAG = '/ng-portals/biz/he/';
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const ymdToIso = (s) => (s && String(s).length === 8)
   ? `${String(s).slice(0, 4)}-${String(s).slice(4, 6)}-${String(s).slice(6, 8)}`
   : null;
+
+/**
+ * Fetches every credit card + its last-closed-cycle transactions for one
+ * account, on an ALREADY-LOGGED-IN page (bank cookies + XSRF already set).
+ * Pulled out of scrapePoalimCards so the combined bank+cards scraper in
+ * src/scrapers/poalim.js can call it without re-implementing the (fiddly,
+ * previously-bug-prone — see billing/purchase date comments below) mapping
+ * logic in a second place.
+ */
+export async function fetchPoalimCardsForAccount(page, acc, onProgress = () => {}) {
+  const accountId = `${acc.bankNumber}-${acc.branchNumber}-${acc.accountNumber}`;
+  const maskedNumber = `${acc.branchNumber}-${acc.accountNumber}`;
+  const corporateName = acc.productLabel || maskedNumber;
+  const results = [];
+
+  onProgress({ step: 'checking-account', message: `בודק כרטיסי אשראי לחשבון ${maskedNumber}`, account: maskedNumber });
+
+  // No statementDate -> the bank's own default: the last CLOSED billing
+  // cycle (mirrors the "always pull the last closed cycle" rule used for
+  // Discount — the still-open current cycle's amounts/dates aren't final).
+  const totalsResp = await page.evaluate(async (acctId) => {
+    const r = await fetch(`/ServerServices/cards/transactions-totals?accountId=${acctId}&transactionsType=previous&lang=he`, {
+      credentials: 'include',
+      headers: { accept: 'application/json, text/plain, */*' },
+    });
+    // A 200/204 with an empty body (observed live for some accounts)
+    // makes r.json() throw "Unexpected end of JSON input" — read as text
+    // first and treat empty/unparseable as no data instead of failing.
+    const text = await r.text();
+    let body = null;
+    if (text) { try { body = JSON.parse(text); } catch {} }
+    return { status: r.status, body };
+  }, accountId);
+
+  const cards = totalsResp.body?.cards ?? [];
+  if (totalsResp.status !== 200 || cards.length === 0) {
+    onProgress({ step: 'account-skip', message: `אין כרטיס אשראי בחשבון ${maskedNumber}`, account: maskedNumber });
+    return results;
+  }
+
+  for (const card of cards) {
+    const ident = card.cardIdentification;
+    const cycleTotal = card.cardBookedBalances?.nationalTransactionsTotal?.[0];
+    if (!ident || !cycleTotal) continue;
+
+    const statementDate = cycleTotal.statementDate;
+    // debitDate is the cycle's headline debit day — used as a fallback
+    // only, same reasoning as DateOfPastDebit in the Discount scraper:
+    // a transaction's own debitDate (below) must win when present, since
+    // some charges (e.g. foreign-currency purchases) hit the bank on
+    // their own earlier date within the same cycle, and each needs its
+    // own bank row to reconcile against the real per-date debit.
+    const cycleBillingDate = ymdToIso(cycleTotal.debitDate);
+
+    const txnResp = await page.evaluate(async (params) => {
+      const qs = new URLSearchParams(params).toString();
+      const r = await fetch(`/ServerServices/cards/transactions?${qs}`, {
+        credentials: 'include',
+        headers: { accept: 'application/json, text/plain, */*' },
+      });
+      // Same defensive parse as the totals call above — an empty body
+      // must not throw and abort the whole sync over one card.
+      const text = await r.text();
+      let body = null;
+      if (text) { try { body = JSON.parse(text); } catch {} }
+      return { status: r.status, body };
+    }, {
+      accountId,
+      cardSuffix: ident.cardSuffix,
+      cardIssuingSPCode: String(ident.cardIssuingSPCode),
+      cardIdServiceProvider: ident.cardIdServiceProvider,
+      transactionsType: 'previous',
+      totalInd: '1',
+      statementDate: String(statementDate),
+      eventCurrencyDescription: 'null',
+      debitEventOrigin: '1',
+      offset: '0',
+      limit: '50',
+      cardIdHapoalim: ident.cardIdHapoalim,
+      lang: 'he',
+    });
+
+    if (txnResp.status !== 200 || !txnResp.body?.card) {
+      onProgress({ step: 'card-error', message: `שגיאה בשליפת תנועות כרטיס ${ident.cardSuffix}`, account: maskedNumber });
+      continue;
+    }
+
+    // nationalTransactions = ILS charges; internationalTransactions
+    // (foreign-currency charges) uses the same nested shape but has
+    // never been observed live — best-effort only, flagged below if hit.
+    const nationalGroups = txnResp.body.card.nationalTransactions ?? [];
+    const internationalGroups = txnResp.body.card.internationalTransactions ?? [];
+    if (internationalGroups.length) {
+      onProgress({ step: 'card-warning', message: `כרטיס ${ident.cardSuffix}: נמצאו תנועות מט"ח — טרם נבדק מבנה זה, ייתכן פירוט חלקי`, account: maskedNumber });
+    }
+
+    const rawDetails = [
+      ...nationalGroups.flatMap(g => (g.transactionsDetails ?? []).map(d => ({ ...d, __intl: false }))),
+      ...internationalGroups.flatMap(g => (g.transactionsDetails ?? []).map(d => ({ ...d, __intl: true }))),
+    ];
+
+    if (rawDetails.length >= 50) {
+      onProgress({ step: 'card-warning', message: `כרטיס ${ident.cardSuffix}: ${rawDetails.length} תנועות בעמוד אחד — ייתכן שיש עוד (pagination טרם ממומש)`, account: maskedNumber });
+    }
+
+    const transactions = rawDetails.map(t => {
+      // The bank sometimes returns "19000101" as a null-date placeholder
+      // for eventDate on charges with no real purchase-event date (e.g.
+      // "דמי כרטיס /הנפקה" card-issuance fees) — confirmed live: pushing
+      // that through as FNCDATE got Priority's own HTTP 400 rejecting the
+      // column outright. Falling back to this cycle's billing date, which
+      // is always a real date, whenever the purchase date's year looks
+      // like the placeholder rather than an actual purchase.
+      const rawPurchaseDate = ymdToIso(t.eventDate);
+      const purchaseDate = (rawPurchaseDate && Number(rawPurchaseDate.slice(0, 4)) >= 2000)
+        ? rawPurchaseDate
+        : (cycleBillingDate || ymdToIso(t.debitDate) || null);
+      const debitDateIso = ymdToIso(t.debitDate);
+      // A debit can't happen before the purchase that caused it — the
+      // bank does sometimes return exactly that (see the same guard in
+      // the Discount scraper, confirmed live and reproducible on
+      // re-sync, not a one-off glitch). Untrustworthy when it fails that
+      // basic check; fall back to the cycle's headline date instead.
+      const billingDate = (debitDateIso && (!purchaseDate || debitDateIso >= purchaseDate))
+        ? debitDateIso
+        : (cycleBillingDate || null);
+      return {
+        // transactionIndexNumber is the bank's own stable per-transaction id.
+        transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
+        purchaseDate,
+        billingDate,
+        merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
+        // Bank convention: positive = charge, negative = refund/credit.
+        // Flipped to match this app's convention (negative = expense),
+        // same as the Discount scraper.
+        amount: -Number(t.currencyAmount?.amount ?? 0),
+        currency: t.__intl ? (t.eventCurrencyDescription || 'ILS') : 'ILS',
+        originalAmount: null,
+        installmentCurrent: t.paymentNumber || null,
+        installmentTotal: t.paymentsNumber || null,
+        status: 'posted',
+        raw: t,
+      };
+    });
+
+    results.push({
+      account: { maskedNumber, corporateName },
+      card: {
+        cardLast4: ident.cardSuffix,
+        label: ident.cardVendorProductName || null,
+      },
+      transactions,
+    });
+
+    onProgress({ step: 'card-done', message: `כרטיס ${ident.cardSuffix}: ${transactions.length} תנועות`, account: maskedNumber, count: transactions.length });
+  }
+
+  return results;
+}
 
 export async function scrapePoalimCards({ credentials, showBrowser = false, onProgress = () => {}, onSmsRequired }) {
   const { userId, password, loginUrl } = credentials;
@@ -113,151 +277,7 @@ export async function scrapePoalimCards({ credentials, showBrowser = false, onPr
 
     const results = [];
     for (const acc of accountsList) {
-      const accountId = `${acc.bankNumber}-${acc.branchNumber}-${acc.accountNumber}`;
-      const maskedNumber = `${acc.branchNumber}-${acc.accountNumber}`;
-      const corporateName = acc.productLabel || maskedNumber;
-
-      onProgress({ step: 'checking-account', message: `בודק כרטיסי אשראי לחשבון ${maskedNumber}`, account: maskedNumber });
-
-      // No statementDate -> the bank's own default: the last CLOSED billing
-      // cycle (mirrors the "always pull the last closed cycle" rule used for
-      // Discount — the still-open current cycle's amounts/dates aren't final).
-      const totalsResp = await page.evaluate(async (acctId) => {
-        const r = await fetch(`/ServerServices/cards/transactions-totals?accountId=${acctId}&transactionsType=previous&lang=he`, {
-          credentials: 'include',
-          headers: { accept: 'application/json, text/plain, */*' },
-        });
-        // A 200/204 with an empty body (observed live for some accounts)
-        // makes r.json() throw "Unexpected end of JSON input" — read as text
-        // first and treat empty/unparseable as no data instead of failing.
-        const text = await r.text();
-        let body = null;
-        if (text) { try { body = JSON.parse(text); } catch {} }
-        return { status: r.status, body };
-      }, accountId);
-
-      const cards = totalsResp.body?.cards ?? [];
-      if (totalsResp.status !== 200 || cards.length === 0) {
-        onProgress({ step: 'account-skip', message: `אין כרטיס אשראי בחשבון ${maskedNumber}`, account: maskedNumber });
-        continue;
-      }
-
-      for (const card of cards) {
-        const ident = card.cardIdentification;
-        const cycleTotal = card.cardBookedBalances?.nationalTransactionsTotal?.[0];
-        if (!ident || !cycleTotal) continue;
-
-        const statementDate = cycleTotal.statementDate;
-        // debitDate is the cycle's headline debit day — used as a fallback
-        // only, same reasoning as DateOfPastDebit in the Discount scraper:
-        // a transaction's own debitDate (below) must win when present, since
-        // some charges (e.g. foreign-currency purchases) hit the bank on
-        // their own earlier date within the same cycle, and each needs its
-        // own bank row to reconcile against the real per-date debit.
-        const cycleBillingDate = ymdToIso(cycleTotal.debitDate);
-
-        const txnResp = await page.evaluate(async (params) => {
-          const qs = new URLSearchParams(params).toString();
-          const r = await fetch(`/ServerServices/cards/transactions?${qs}`, {
-            credentials: 'include',
-            headers: { accept: 'application/json, text/plain, */*' },
-          });
-          // Same defensive parse as the totals call above — an empty body
-          // must not throw and abort the whole sync over one card.
-          const text = await r.text();
-          let body = null;
-          if (text) { try { body = JSON.parse(text); } catch {} }
-          return { status: r.status, body };
-        }, {
-          accountId,
-          cardSuffix: ident.cardSuffix,
-          cardIssuingSPCode: String(ident.cardIssuingSPCode),
-          cardIdServiceProvider: ident.cardIdServiceProvider,
-          transactionsType: 'previous',
-          totalInd: '1',
-          statementDate: String(statementDate),
-          eventCurrencyDescription: 'null',
-          debitEventOrigin: '1',
-          offset: '0',
-          limit: '50',
-          cardIdHapoalim: ident.cardIdHapoalim,
-          lang: 'he',
-        });
-
-        if (txnResp.status !== 200 || !txnResp.body?.card) {
-          onProgress({ step: 'card-error', message: `שגיאה בשליפת תנועות כרטיס ${ident.cardSuffix}`, account: maskedNumber });
-          continue;
-        }
-
-        // nationalTransactions = ILS charges; internationalTransactions
-        // (foreign-currency charges) uses the same nested shape but has
-        // never been observed live — best-effort only, flagged below if hit.
-        const nationalGroups = txnResp.body.card.nationalTransactions ?? [];
-        const internationalGroups = txnResp.body.card.internationalTransactions ?? [];
-        if (internationalGroups.length) {
-          onProgress({ step: 'card-warning', message: `כרטיס ${ident.cardSuffix}: נמצאו תנועות מט"ח — טרם נבדק מבנה זה, ייתכן פירוט חלקי`, account: maskedNumber });
-        }
-
-        const rawDetails = [
-          ...nationalGroups.flatMap(g => (g.transactionsDetails ?? []).map(d => ({ ...d, __intl: false }))),
-          ...internationalGroups.flatMap(g => (g.transactionsDetails ?? []).map(d => ({ ...d, __intl: true }))),
-        ];
-
-        if (rawDetails.length >= 50) {
-          onProgress({ step: 'card-warning', message: `כרטיס ${ident.cardSuffix}: ${rawDetails.length} תנועות בעמוד אחד — ייתכן שיש עוד (pagination טרם ממומש)`, account: maskedNumber });
-        }
-
-        const transactions = rawDetails.map(t => {
-          // The bank sometimes returns "19000101" as a null-date placeholder
-          // for eventDate on charges with no real purchase-event date (e.g.
-          // "דמי כרטיס /הנפקה" card-issuance fees) — confirmed live: pushing
-          // that through as FNCDATE got Priority's own HTTP 400 rejecting the
-          // column outright. Falling back to this cycle's billing date, which
-          // is always a real date, whenever the purchase date's year looks
-          // like the placeholder rather than an actual purchase.
-          const rawPurchaseDate = ymdToIso(t.eventDate);
-          const purchaseDate = (rawPurchaseDate && Number(rawPurchaseDate.slice(0, 4)) >= 2000)
-            ? rawPurchaseDate
-            : (cycleBillingDate || ymdToIso(t.debitDate) || null);
-          const debitDateIso = ymdToIso(t.debitDate);
-          // A debit can't happen before the purchase that caused it — the
-          // bank does sometimes return exactly that (see the same guard in
-          // the Discount scraper, confirmed live and reproducible on
-          // re-sync, not a one-off glitch). Untrustworthy when it fails that
-          // basic check; fall back to the cycle's headline date instead.
-          const billingDate = (debitDateIso && (!purchaseDate || debitDateIso >= purchaseDate))
-            ? debitDateIso
-            : (cycleBillingDate || null);
-          return {
-            // transactionIndexNumber is the bank's own stable per-transaction id.
-            transactionID: `${ident.cardSuffix}-${t.transactionIndexNumber}`,
-            purchaseDate,
-            billingDate,
-            merchantName: (t.merchantDetails?.merchantName || '').trim() || null,
-            // Bank convention: positive = charge, negative = refund/credit.
-            // Flipped to match this app's convention (negative = expense),
-            // same as the Discount scraper.
-            amount: -Number(t.currencyAmount?.amount ?? 0),
-            currency: t.__intl ? (t.eventCurrencyDescription || 'ILS') : 'ILS',
-            originalAmount: null,
-            installmentCurrent: t.paymentNumber || null,
-            installmentTotal: t.paymentsNumber || null,
-            status: 'posted',
-            raw: t,
-          };
-        });
-
-        results.push({
-          account: { maskedNumber, corporateName },
-          card: {
-            cardLast4: ident.cardSuffix,
-            label: ident.cardVendorProductName || null,
-          },
-          transactions,
-        });
-
-        onProgress({ step: 'card-done', message: `כרטיס ${ident.cardSuffix}: ${transactions.length} תנועות`, account: maskedNumber, count: transactions.length });
-      }
+      results.push(...await fetchPoalimCardsForAccount(page, acc, onProgress));
     }
 
     onProgress({ step: 'done', message: `סיום: ${results.length} כרטיסים`, total: results.length });

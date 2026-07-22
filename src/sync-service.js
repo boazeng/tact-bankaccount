@@ -10,6 +10,13 @@ import {
 } from './db.js';
 import { resolveAllCredentialsForBank } from './secrets/bank-creds.js';
 import { checkBalanceContinuity } from './balance-check.js';
+// Poalim-only: it demands a fresh SMS code on every login, so bundling its
+// credit-card fetch into this same bank-sync session (via scrapePoalim's
+// fetchCards option) means the user types the code once instead of twice.
+// Every other bank's card sync stays fully separate (see credit-cards/routes.js).
+import {
+  upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
+} from './credit-cards/db.js';
 
 /**
  * Syncs every account for one bank across all configured credential sets.
@@ -38,6 +45,8 @@ export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEve
   let totalNew = 0;
   let totalAll = 0;
   let skippedInactive = 0;
+  let totalNewCardTxns = 0;
+  let totalCards = 0;
   const perAccount = [];
   let lastResult = null;
 
@@ -51,6 +60,8 @@ export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEve
       daysBack,
       onProgress: (p) => onEvent('progress', p),
       onSmsRequired,
+      // Ignored by every scraper except Poalim's — see the import comment above.
+      fetchCards: bankId === 'poalim',
     });
     lastResult = result;
 
@@ -119,6 +130,38 @@ export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEve
         dedupSkipped: fetched - newCount,
       });
     }
+
+    // Poalim-only combined session (see fetchCards above) — save the card
+    // data it pulled through the SAME login, using the identical save logic
+    // as runCardBankSync in credit-cards/routes.js so the two paths can't
+    // silently diverge.
+    for (const entry of result.cards ?? []) {
+      const cardId = upsertCard({
+        bankId,
+        accountMaskedNumber: entry.account.maskedNumber,
+        cardLast4: entry.card.cardLast4,
+        label: entry.card.label,
+        corporateName: entry.account.corporateName,
+      });
+      const newCardCount = insertCardTransactions(cardId, entry.transactions);
+      const billingDates = [...new Set(entry.transactions.map(t => t.billingDate).filter(Boolean))];
+      const keepIds = entry.transactions.map(t => t.transactionID);
+      const staleRemoved = billingDates.reduce(
+        (sum, date) => sum + deleteStaleCardTransactions(cardId, date, keepIds),
+        0,
+      );
+      updateCardLastSync(cardId);
+      totalCards++;
+      totalNewCardTxns += newCardCount;
+
+      onEvent('card-saved', {
+        cardLast4: entry.card.cardLast4,
+        account: entry.account.maskedNumber,
+        fetched: entry.transactions.length,
+        newSaved: newCardCount,
+        staleRemoved,
+      });
+    }
   }
 
   return {
@@ -133,5 +176,7 @@ export async function runBankSync(bankId, { daysBack = 30, actor = 'sync', onEve
     totalNewSaved: totalNew,
     totalDedupSkipped: totalAll - totalNew,
     perAccount,
+    totalCards,
+    totalNewCardTxns,
   };
 }

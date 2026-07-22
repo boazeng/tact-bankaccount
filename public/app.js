@@ -563,6 +563,11 @@ async function startSync(bankId, bankName, days = 30) {
           accountsSaved.push(data);
           const dupNote = data.dedupSkipped > 0 ? ` (${data.dedupSkipped} כפילויות דולגו)` : '';
           addLine(`✓ ${data.corporateName} (${data.maskedNumber}): נשמרו ${data.newSaved} תנועות חדשות${dupNote}`, 'success');
+        } else if (event === 'card-saved') {
+          // Poalim bundles its credit-card fetch into this same sync (one SMS
+          // code instead of two) — its card-saved events arrive on this stream.
+          const staleNote = data.staleRemoved > 0 ? ` (${data.staleRemoved} תנועות ישנות הוסרו)` : '';
+          addLine(`✓ כרטיס ${data.cardLast4} (${data.account}): ${data.newSaved} תנועות חדשות${staleNote}`, 'success');
         } else if (event === 'balance-check') {
           const dates = data.mismatches.map(m => fmtDate(m.date)).join(', ');
           addLine(`⚠ ${data.corporateName} (${data.maskedNumber}): פער ביתרה בתאריכים ${dates} — כנראה תנועה חסרה/כפולה שירדה מהבנק (לא קשור לפריוריטי)`, 'error');
@@ -586,8 +591,11 @@ async function startSync(bankId, bankName, days = 30) {
   }
 
   if (bankSyncOk) {
+    // Poalim's cards already came through on this same stream (card-saved
+    // events above) — one login, one SMS code. Every other supported bank
+    // still needs its own separate card-sync call/login.
     const cardBanks = await getCardSupportedBanks();
-    if (cardBanks.includes(bankId)) {
+    if (bankId !== 'poalim' && cardBanks.includes(bankId)) {
       await syncCardsForBank(bankId, bankName, addLine);
     }
     setTimeout(() => renderIndex(), 800);
@@ -672,6 +680,10 @@ async function syncAllBanks() {
           } else if (event === 'account-saved') {
             const dupNote = data.dedupSkipped > 0 ? ` (${data.dedupSkipped} כפילויות דולגו)` : '';
             addLine(`✓ ${data.corporateName} (${data.maskedNumber}): ${data.newSaved} תנועות חדשות${dupNote}`, 'success');
+          } else if (event === 'card-saved') {
+            // Poalim bundles its credit-card fetch into this same sync — see startSync.
+            const staleNote = data.staleRemoved > 0 ? ` (${data.staleRemoved} תנועות ישנות הוסרו)` : '';
+            addLine(`✓ כרטיס ${data.cardLast4} (${data.account}): ${data.newSaved} תנועות חדשות${staleNote}`, 'success');
           } else if (event === 'balance-check') {
             const dates = data.mismatches.map(m => fmtDate(m.date)).join(', ');
             addLine(`⚠ ${data.corporateName} (${data.maskedNumber}): פער ביתרה בתאריכים ${dates} — כנראה תנועה חסרה/כפולה שירדה מהבנק (לא קשור לפריוריטי)`, 'error');
@@ -691,7 +703,8 @@ async function syncAllBanks() {
       panel.classList.add('error');
     }
 
-    if (bankOk && cardBanks.includes(bank.id)) {
+    // Poalim's cards already came through on this same stream — see startSync.
+    if (bankOk && bank.id !== 'poalim' && cardBanks.includes(bank.id)) {
       await syncCardsForBank(bank.id, bank.name_he, addLine);
     }
   }
