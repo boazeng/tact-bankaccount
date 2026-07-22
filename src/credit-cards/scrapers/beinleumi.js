@@ -120,13 +120,16 @@ async function navigateToCardsSummary(page, onProgress) {
     return false;
   }, beforeHtml);
   if (!clicked) throw new Error('scrapeBeinleumiCards: "פירוט חיובים" nav item not found');
-  await sleep(8_000);
+  await sleep(2_000);
 }
 
 // The summary/detail portlet lives in a wps/myportal iframe that gets
 // replaced (through a transient portal-token redirect frame) every time we
 // call submitLinkForm — poll fresh rather than holding a frame reference.
-async function findStablePortletFrame(page, { timeoutMs = 20_000 } = {}) {
+// The legacy portlet has been observed taking a genuinely long time to
+// settle (a loading spinner alone for 20-30s in interactive testing), so
+// this needs a generous budget, not just the ~8s a modern SPA route needs.
+async function findStablePortletFrame(page, { timeoutMs = 45_000 } = {}) {
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
     const candidates = page.frames().filter(f => /wps\/myportal/.test(f.url()) && !f.isDetached());
