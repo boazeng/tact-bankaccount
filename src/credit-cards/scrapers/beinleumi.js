@@ -112,14 +112,22 @@ async function navigateToCardsSummary(page, onProgress) {
 // The legacy portlet has been observed taking a genuinely long time to
 // settle (a loading spinner alone for 20-30s in interactive testing), so
 // this needs a generous budget, not just the ~8s a modern SPA route needs.
-async function findStablePortletFrame(page, { timeoutMs = 45_000 } = {}) {
+//
+// Calling submitLinkForm() programmatically (rather than a real click that
+// navigates the SAME frame) can leave the OLD wps/myportal frame alive
+// alongside the new one — a plain "any content" check matched the stale
+// summary frame every time (it has plenty of text too), so every month came
+// back with 0 rows. Iterate newest-first (page.frames() is creation-order)
+// and let the caller assert what content it actually needs.
+async function findStablePortletFrame(page, { timeoutMs = 45_000, requireFn = null } = {}) {
+  const defaultCheck = () => (document.body?.innerText || '').trim().length > 20;
   const start = Date.now();
   while (Date.now() - start < timeoutMs) {
-    const candidates = page.frames().filter(f => /wps\/myportal/.test(f.url()) && !f.isDetached());
+    const candidates = page.frames().filter(f => /wps\/myportal/.test(f.url()) && !f.isDetached()).reverse();
     for (const frame of candidates) {
       try {
-        const hasContent = await frame.evaluate(() => (document.body?.innerText || '').trim().length > 20);
-        if (hasContent) return frame;
+        const ok = await frame.evaluate(requireFn || defaultCheck);
+        if (ok) return frame;
       } catch { /* detached mid-check — try the next candidate */ }
     }
     await sleep(1_000);
@@ -274,7 +282,13 @@ async function attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgres
         continue;
       }
 
-      const detailFrame = await findStablePortletFrame(page);
+      // Must specifically be the detail page (has the transactions table),
+      // not just any surviving wps/myportal frame — the summary frame can
+      // still be alive at this point since submitLinkForm() was called
+      // programmatically rather than via a real navigating click.
+      const detailFrame = await findStablePortletFrame(page, {
+        requireFn: () => !!document.querySelector('table[id^="hiuvumTbl"]'),
+      });
       if (!detailFrame) {
         onProgress({ step: 'month-error', message: `מסגרת הפירוט לא נטענה עבור ${link.dateParam}`, account: last4 });
         continue;
