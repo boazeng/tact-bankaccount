@@ -11,6 +11,12 @@ const CARD_DEBIT_DESCRIPTION = {
   discount: (description, cardLast4) => description.includes('חיוב לכרטיס') && (!cardLast4 || description.includes(cardLast4)),
   leumi: (description) => description.includes('לאומי ויזה'),
   poalim: (description) => description.includes('אמריקן אקספרס'),
+  // "ישראכרט בע"מ - 6068" — confirmed live against the user's real checking
+  // transactions (src/inspect-beinleumi-transactions.js captured 6 months of
+  // real data). Same day regularly also has other unrelated debits (עמלת
+  // הקצאת אשראי, עמלת רישום פעולה בחשבון), so cardLast4 disambiguation is
+  // needed here too, same as Discount.
+  beinleumi: (description, cardLast4) => description.includes('ישראכרט') && (!cardLast4 || description.includes(cardLast4)),
 };
 
 /**
