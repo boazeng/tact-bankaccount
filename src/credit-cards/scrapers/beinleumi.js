@@ -261,7 +261,10 @@ async function attemptScrapeBeinleumiCards({ credentials, showBrowser, onProgres
     await navigateToCardsSummary(page, onProgress);
 
     const summaryFrame = await findStablePortletFrame(page);
-    if (!summaryFrame) throw new Error('scrapeBeinleumiCards: charges summary frame not found/stable');
+    if (!summaryFrame) {
+      const frameUrls = page.frames().map(f => f.url().slice(0, 90)).join(' | ');
+      throw new Error(`scrapeBeinleumiCards: charges summary frame not found/stable. page url: ${page.url().slice(0, 90)}. frames: ${frameUrls}`);
+    }
 
     const links = await extractCardMonthLinks(summaryFrame);
     onProgress({ step: 'months-found', message: `נמצאו ${links.length} חודשי חיוב`, count: links.length });
