@@ -171,9 +171,14 @@ async function scrapeMonthDetail(frame, cardLast4) {
     for (const table of tables) {
       // The billing-date/currency header sits in the preceding row's
       // TitleNIs_* block — walk up to the enclosing section to find it.
+      // Only the title div's OWN short text ("עסקאות בשקלים, חיוב בתאריך
+      // ...") decides currency — the wider ancestor section also contains
+      // boilerplate legal text that happens to mention "מט"ח" even on an
+      // all-ILS page, which falsely flagged every month as foreign.
       const section = table.closest('tr')?.closest('table')?.closest('td')?.closest('tr')?.parentElement;
-      const headerEl = section?.querySelector('[class*="TitleNIs_"] .strong[dir="ltr"]');
-      const isForeign = /מטבע חוץ|מט"ח/.test(section?.textContent || '');
+      const titleDiv = section?.querySelector('[class*="TitleNIs_"]');
+      const headerEl = titleDiv?.querySelector('.strong[dir="ltr"]');
+      const isForeign = /מטבע חוץ/.test(titleDiv?.textContent || '') || !/בשקלים/.test(titleDiv?.textContent || '');
       const billingDateText = headerEl ? headerEl.textContent.trim() : null;
 
       const rows = Array.from(table.querySelectorAll('tbody tr')).filter(tr => tr.querySelectorAll('td').length >= 4);
