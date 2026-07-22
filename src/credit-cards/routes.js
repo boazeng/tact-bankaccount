@@ -7,6 +7,7 @@ import { bankRegistry } from '../scrapers/index.js';
 import { scrapeDiscountCards, bankInfo as discountCardsInfo } from './scrapers/discount.js';
 import { scrapePoalimCards, bankInfo as poalimCardsInfo } from './scrapers/poalim.js';
 import { scrapeLeumiCards, bankInfo as leumiCardsInfo } from './scrapers/leumi.js';
+import { scrapeBeinleumiCards, bankInfo as beinleumiCardsInfo } from './scrapers/beinleumi.js';
 import {
   upsertCard, updateCardLastSync, insertCardTransactions, deleteStaleCardTransactions,
   listCards, getCard, getCardTransactions, getPriorityPreviewForCard,
@@ -22,6 +23,7 @@ export const cardScraperRegistry = {
   [discountCardsInfo.id]: { info: discountCardsInfo, scrape: scrapeDiscountCards },
   [poalimCardsInfo.id]: { info: poalimCardsInfo, scrape: scrapePoalimCards },
   [leumiCardsInfo.id]: { info: leumiCardsInfo, scrape: scrapeLeumiCards },
+  [beinleumiCardsInfo.id]: { info: beinleumiCardsInfo, scrape: scrapeBeinleumiCards },
 };
 
 // In-memory map of in-flight card-scraper sessions waiting on user input (SMS
