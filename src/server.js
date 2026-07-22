@@ -70,7 +70,13 @@ installAuth(app, {
   initialUsers: [],
 });
 
-app.use(express.static(path.resolve('public')));
+// no-cache (not no-store): browsers still keep a local copy but must
+// revalidate with the server on every load, so a deploy that changes app.js
+// is picked up immediately instead of silently serving a stale cached copy
+// of the header/nav until a hard refresh.
+app.use(express.static(path.resolve('public'), {
+  setHeaders: (res) => res.setHeader('Cache-Control', 'no-cache'),
+}));
 app.use(creditCardsRouter);
 
 app.get('/api/banks', (req, res) => {
