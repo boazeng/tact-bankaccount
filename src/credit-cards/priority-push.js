@@ -254,9 +254,59 @@ export function matchLinesAgainstExisting(lines, existingLines) {
   });
 }
 
-/** Convenience wrapper: just the lines matchLinesAgainstExisting found no match for. */
-export function diffMissingLines(lines, existingLines) {
-  return matchLinesAgainstExisting(lines, existingLines).filter(l => !l.matched);
+/**
+ * Same idea as matchLinesAgainstExisting, but for the one place text-only
+ * matching is unsafe to act on directly: deciding what to push into a page
+ * that's already confirmed to exist at this exact CASHNAME+date. A line with
+ * no exact DETAILS+amount match there gets a second chance against amount
+ * alone — if some other unclaimed existing line has the identical amount,
+ * this is far more likely the same transaction stored under different
+ * wording (manual edit in Priority, an older run's slightly different
+ * DETAILS format, etc.) than a genuinely new transaction that happens to
+ * cost the exact same amount. Confirmed live 2026-07-22: the daily
+ * scheduler's first unattended run hit exactly this — a page whose lines had
+ * been manually retyped in Priority the day before read as "0 lines match"
+ * under pure text comparison, and diffMissingLines pushed a real duplicate.
+ *
+ * Each line comes back annotated with `status`: 'matched' (exact) |
+ * 'ambiguous' (same amount, different wording — never auto-pushed, needs a
+ * human to confirm it isn't a duplicate) | 'missing' (no match by text or
+ * amount — safe to push).
+ */
+export function classifyLinesAgainstExisting(lines, existingLines) {
+  const pool = existingLines.map(l => ({
+    details: normalizeText(l.DETAILS).slice(0, 24),
+    credit: Number(l.CREDIT || 0),
+    debit: Number(l.DEBIT || 0),
+    used: false,
+  }));
+
+  const provisional = lines.map(line => {
+    const details = normalizeText(line.details).slice(0, 24);
+    const credit = line.credit || 0;
+    const debit = line.debit || 0;
+    const idx = pool.findIndex(p => !p.used && p.details === details
+      && Math.abs(p.credit - credit) < 0.01 && Math.abs(p.debit - debit) < 0.01);
+    if (idx === -1) return { line, status: null };
+    pool[idx].used = true;
+    return { line, status: 'matched' };
+  });
+
+  for (const entry of provisional) {
+    if (entry.status) continue;
+    const credit = entry.line.credit || 0;
+    const debit = entry.line.debit || 0;
+    const idx = pool.findIndex(p => !p.used
+      && Math.abs(p.credit - credit) < 0.01 && Math.abs(p.debit - debit) < 0.01);
+    if (idx !== -1) {
+      pool[idx].used = true;
+      entry.status = 'ambiguous';
+    } else {
+      entry.status = 'missing';
+    }
+  }
+
+  return provisional.map(({ line, status }) => ({ ...line, matched: status === 'matched', status }));
 }
 
 /**
@@ -307,11 +357,13 @@ export async function checkCardPageStatus(cashName, page) {
     return { status: 'missing', missingCount, lineMatches, otherCashnamesOnDate };
   }
   const existingLines = await fetchExistingCardLines(cashName, page.curdate);
-  const lineMatches = matchLinesAgainstExisting(page.lines, existingLines);
-  const missingCount = lineMatches.filter(l => !l.matched).length;
+  const lineMatches = classifyLinesAgainstExisting(page.lines, existingLines);
+  const missingCount = lineMatches.filter(l => l.status === 'missing').length;
+  const ambiguousCount = lineMatches.filter(l => l.status === 'ambiguous').length;
   return {
-    status: missingCount === 0 ? 'complete' : 'partial',
+    status: missingCount === 0 && ambiguousCount === 0 ? 'complete' : 'partial',
     missingCount,
+    ambiguousCount,
     lineMatches,
   };
 }
@@ -333,14 +385,26 @@ export async function pushCardPageToPriority(cashName, page) {
 
   let bankPage = existing;
   let linesToPush = page.lines;
+  let ambiguousLines = [];
 
   if (existing) {
+    // classifyLinesAgainstExisting, not the plain exact-text diff: a line
+    // that matches an existing one by amount alone (different wording) must
+    // never be auto-pushed here — see the function's own doc comment for
+    // the 2026-07-22 duplicate this replaced.
     const existingLines = await fetchExistingCardLines(cashName, page.curdate);
-    linesToPush = diffMissingLines(page.lines, existingLines);
+    const classified = classifyLinesAgainstExisting(page.lines, existingLines);
+    ambiguousLines = classified.filter(l => l.status === 'ambiguous');
+    linesToPush = classified.filter(l => l.status === 'missing');
+
     if (linesToPush.length === 0) {
       return {
         bpyear: existing.BPYEAR, cash: existing.CASH, bpnum: existing.BPNUM,
         pushed: [], failed: [], alreadyExisted: true, hadExistingPage: true,
+        ...(ambiguousLines.length > 0 ? {
+          ambiguous: true,
+          skippedReason: `${ambiguousLines.length} שורות בסכום זהה לשורה קיימת אך בניסוח שונה — לא נדחפו, נדרשת בדיקה ידנית שאינן כפילות`,
+        } : {}),
       };
     }
   } else {
@@ -424,6 +488,10 @@ export async function pushCardPageToPriority(cashName, page) {
   return {
     bpyear: bankPage.BPYEAR, cash: bankPage.CASH, bpnum: bankPage.BPNUM,
     pushed, failed, alreadyExisted: false, hadExistingPage: !!existing,
+    ...(ambiguousLines.length > 0 ? {
+      ambiguous: true,
+      skippedReason: `${ambiguousLines.length} שורות בסכום זהה לשורה קיימת אך בניסוח שונה — לא נדחפו, נדרשת בדיקה ידנית שאינן כפילות`,
+    } : {}),
   };
 }
 
