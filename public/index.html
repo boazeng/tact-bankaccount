@@ -29,12 +29,18 @@
 
     <div class="action-row">
       <div class="action-card sync">
-        <button class="btn btn-pri" onclick="syncAllBanks()">↓ סנכרן בנקים</button>
-        <div class="action-meta" id="last-sync-meta"><span class="dot"></span><span>בודק…</span></div>
+        <span class="action-icon">↓</span>
+        <div class="action-card-main">
+          <button class="btn btn-pri" onclick="syncAllBanks()">סנכרן בנקים</button>
+          <div class="action-meta" id="last-sync-meta"><span class="dot"></span><span>בודק…</span></div>
+        </div>
       </div>
       <div class="action-card push">
-        <button class="btn btn-push" onclick="pushAllToPriority()">↑ קלוט לפריוריטי</button>
-        <div class="action-meta" id="last-push-meta"><span class="dot"></span><span>בודק…</span></div>
+        <span class="action-icon">↑</span>
+        <div class="action-card-main">
+          <button class="btn btn-push" onclick="pushAllToPriority()">קלוט לפריוריטי</button>
+          <div class="action-meta" id="last-push-meta"><span class="dot"></span><span>בודק…</span></div>
+        </div>
       </div>
     </div>
 
@@ -52,7 +58,10 @@
     </div>
 
     <div class="balances-panel">
-      <div class="balances-title" id="balances-title">יתרות בבנקים</div>
+      <div class="balances-head">
+        <div class="balances-title" id="balances-title">יתרות בבנקים</div>
+        <div class="balances-total" id="balances-total"></div>
+      </div>
       <div class="balances-list" id="balances-list"></div>
     </div>
   </div>
@@ -188,10 +197,19 @@
 
       const signCls = (v) => v > 0 ? 'pos' : v < 0 ? 'neg' : '';
 
+      const grandTotal = rows.reduce((s, c) => s + c.total, 0);
+      const totalEl = document.getElementById('balances-total');
+      totalEl.innerHTML = rows.length
+        ? `<span class="bt-lbl">סה״כ</span><span class="bt-amt ${signCls(grandTotal)}">${fmtMoney(grandTotal)}</span>`
+        : '';
+
+      const maxAbs = Math.max(1, ...rows.map((c) => Math.abs(c.total)));
+
       const list = document.getElementById('balances-list');
       list.innerHTML = rows.length
         ? rows.map((c) => {
             const color = colorForKey(c.name);
+            const share = Math.round((Math.abs(c.total) / maxAbs) * 100);
             const bankRows = c.banks.size > 1
               ? `<div class="company-banks">${Array.from(c.banks.values())
                   .sort((a, b) => Math.abs(b.balance) - Math.abs(a.balance))
@@ -199,11 +217,12 @@
                   .join('')}</div>`
               : '';
             return `
-              <div class="company-group" style="border-color:${color}">
+              <div class="company-group" style="--company-color:${color}">
                 <div class="company-head">
                   <span class="company-name"><span class="dot" style="background:${color}"></span>${escapeHtml(c.name)}</span>
                   <span class="company-total ${signCls(c.total)}">${fmtMoney(c.total)}</span>
                 </div>
+                <div class="company-share"><i style="width:${share}%;background:${color}"></i></div>
                 ${bankRows}
               </div>
             `;
